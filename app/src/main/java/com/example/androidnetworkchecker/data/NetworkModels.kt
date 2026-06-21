@@ -273,6 +273,7 @@ enum class SpyMode { GLINT_STROBE, IR_THERMAL, AI_OBJECT, OFF }
 data class SpyScannerState(
     val mode: SpyMode = SpyMode.OFF,
     val isStrobeActive: Boolean = false,
-    val selectedCameraId: String = "0" // 0 = Rear, 1 = Front
+    val selectedCameraId: String = "0", // 0 = Rear, 1 = Front
+    val glintThreshold: Float = 180f
 )
 

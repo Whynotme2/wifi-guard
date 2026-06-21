@@ -614,6 +614,7 @@ fun OpticsCamView(spyState: SpyScannerState, viewModel: SpyScannerViewModel) {
                     aiDetectedObject = label
                     aiConfidence = confidence
                 },
+                glintThreshold = spyState.glintThreshold,
                 modifier = Modifier.fillMaxSize()
             )
 
@@ -797,6 +798,37 @@ fun OpticsCamView(spyState: SpyScannerState, viewModel: SpyScannerViewModel) {
             }
 
             if (spyState.mode == SpyMode.GLINT_STROBE) {
+                // Glint Sensitivity Slider
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(end = 12.dp, bottom = 76.dp)
+                        .width(160.dp)
+                        .background(Color.Black.copy(alpha = 0.7f), RoundedCornerShape(8.dp))
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Sensitivity", color = Slate50, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                        val sensPercentage = ((250f - spyState.glintThreshold) / (250f - 120f) * 100).toInt().coerceIn(0, 100)
+                        Text("$sensPercentage%", color = Teal500, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                    }
+                    Slider(
+                        value = spyState.glintThreshold,
+                        onValueChange = { viewModel.setGlintThreshold(it) },
+                        valueRange = 120f..250f,
+                        colors = SliderDefaults.colors(
+                            thumbColor = Teal500,
+                            activeTrackColor = Teal500,
+                            inactiveTrackColor = Slate700
+                        )
+                    )
+                }
+
                 // Strobe toggle switcher
                 Row(
                     modifier = Modifier
@@ -965,10 +997,15 @@ fun CameraPreview3(
     onGlintDetected: (Float, Float) -> Unit,
     detector: TFLiteObjectDetector? = null,
     onObjectDetected: ((String, Float) -> Unit)? = null,
+    glintThreshold: Float = 180f,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     val currentOnGlintDetected by rememberUpdatedState(onGlintDetected)
+    val currentGlintThreshold by rememberUpdatedState(glintThreshold)
+    val mainHandler = remember { android.os.Handler(android.os.Looper.getMainLooper()) }
+    var activeCandidates by remember { mutableStateOf<List<Offset>>(emptyList()) }
+    var isAiLensDetected by remember { mutableStateOf(false) }
     data class Peak(val x: Int, val y: Int, val value: Int)
 
     var textureViewRef by remember { mutableStateOf<TextureView?>(null) }
@@ -981,7 +1018,10 @@ fun CameraPreview3(
         val textureView = textureViewRef ?: return@LaunchedEffect
         var isCancelled = false
         var imageReader: ImageReader? = null
-        var isAiLensDetected = false
+        val innerDX = intArrayOf(-1, 0, 1, -1, 1, -1, 0, 1, -2, 0, 2, -2, 2, -2, 0, 2)
+        val innerDY = intArrayOf(-1, -1, -1, 0, 0, 1, 1, 1, -2, -2, -2, 0, 0, 2, 2, 2)
+        val outerDX = intArrayOf(-3, 0, 3, -3, 3, -3, 0, 3, -4, 0, 4, -4, 4, -4, 0, 4)
+        val outerDY = intArrayOf(-3, -3, -3, 0, 0, 3, 3, 3, -4, -4, -4, 0, 0, 4, 4, 4)
         val handlerThread = android.os.HandlerThread("CameraBackground").apply { start() }
         val backgroundHandler = android.os.Handler(handlerThread.looper)
         
@@ -1097,16 +1137,16 @@ fun CameraPreview3(
 
                                     val bytes = ByteArray(buffer.remaining())
                                     buffer.get(bytes)
-
                                     val validCandidates = mutableListOf<Peak>()
 
-                                    // Step by 2 to cover the image space efficiently
-                                    for (y in 2 until h - 2 step 2) {
-                                        for (x in 2 until w - 2 step 2) {
+                                    // Step by 2 to cover the image space efficiently with a 4-pixel border safety margin
+                                    val threshold = currentGlintThreshold
+                                    for (y in 4 until h - 4 step 2) {
+                                        for (x in 4 until w - 4 step 2) {
                                             val index = y * rowStride + x * pixelStride
                                             if (index < bytes.size) {
                                                 val value = bytes[index].toInt() and 0xFF
-                                                if (value >= 250) {
+                                                if (value >= threshold) {
                                                     // 1. Check if it is a local peak compared to its 3x3 neighbors
                                                     var isPeak = true
                                                     for (ny in (y - 1)..(y + 1)) {
@@ -1123,40 +1163,40 @@ fun CameraPreview3(
                                                     }
 
                                                     if (isPeak) {
-                                                        // 2. Spatial validation checks for local peak
-                                                        // Distance 1 neighbors average
-                                                        var sum1 = 0
-                                                        var count1 = 0
-                                                        for (ny in (y - 1)..(y + 1)) {
-                                                            for (nx in (x - 1)..(x + 1)) {
-                                                                if (ny != y || nx != x) {
-                                                                    val nIdx = ny * rowStride + nx * pixelStride
-                                                                    if (nIdx < bytes.size) {
-                                                                        sum1 += bytes[nIdx].toInt() and 0xFF
-                                                                        count1++
-                                                                    }
+                                                        // 2. Spatial validation checks for local peak via Doughnut Filter
+                                                        var sumInner = 0
+                                                        var countInner = 0
+                                                        for (i in innerDX.indices) {
+                                                            val nx = x + innerDX[i]
+                                                            val ny = y + innerDY[i]
+                                                            if (nx in 0 until w && ny in 0 until h) {
+                                                                val nIdx = ny * rowStride + nx * pixelStride
+                                                                if (nIdx < bytes.size) {
+                                                                    sumInner += bytes[nIdx].toInt() and 0xFF
+                                                                    countInner++
                                                                 }
                                                             }
                                                         }
-                                                        val avg1 = if (count1 > 0) sum1 / count1 else value
+                                                        val avgInner = if (countInner > 0) sumInner.toFloat() / countInner else value.toFloat()
 
-                                                        // Distance 2 neighbors average
-                                                        var sum2 = 0
-                                                        var count2 = 0
-                                                        for (ny in (y - 2)..(y + 2)) {
-                                                            for (nx in (x - 2)..(x + 2)) {
-                                                                if (Math.abs(ny - y) == 2 || Math.abs(nx - x) == 2) {
-                                                                    val nIdx = ny * rowStride + nx * pixelStride
-                                                                    if (nIdx < bytes.size) {
-                                                                        sum2 += bytes[nIdx].toInt() and 0xFF
-                                                                        count2++
-                                                                    }
+                                                        var sumOuter = 0
+                                                        var countOuter = 0
+                                                        for (i in outerDX.indices) {
+                                                            val nx = x + outerDX[i]
+                                                            val ny = y + outerDY[i]
+                                                            if (nx in 0 until w && ny in 0 until h) {
+                                                                val nIdx = ny * rowStride + nx * pixelStride
+                                                                if (nIdx < bytes.size) {
+                                                                    sumOuter += bytes[nIdx].toInt() and 0xFF
+                                                                    countOuter++
                                                                 }
                                                             }
                                                         }
-                                                        val avg2 = if (count2 > 0) sum2 / count2 else value
+                                                        val avgOuter = if (countOuter > 0) sumOuter.toFloat() / countOuter else value.toFloat()
 
-                                                        if (value - avg1 >= 30 && value - avg2 >= 70) {
+                                                        // Lens Glint signature: center peak is very bright compared to inner aperture ring,
+                                                        // and outer casing/bezel is lighter than the dark aperture ring.
+                                                        if (value - avgInner >= 35f && avgOuter - avgInner >= 12f) {
                                                             validCandidates.add(Peak(x, y, value))
                                                             if (validCandidates.size >= 5) break
                                                         }
@@ -1199,11 +1239,24 @@ fun CameraPreview3(
                                         history.removeFirst()
                                     }
 
-                                    if ((isStrobeActive || isAiLensDetected) && bestGlint != null) {
-                                        currentOnGlintDetected(bestGlint.x.toFloat() / w, bestGlint.y.toFloat() / h)
+                                    if (isStrobeActive || isAiLensDetected) {
+                                        val candidateOffsets = validCandidates.map { peak ->
+                                            Offset(peak.x.toFloat() / w, peak.y.toFloat() / h)
+                                        }
+                                        mainHandler.post {
+                                            activeCandidates = candidateOffsets
+                                        }
+                                        if (bestGlint != null) {
+                                            currentOnGlintDetected(bestGlint.x.toFloat() / w, bestGlint.y.toFloat() / h)
+                                        } else {
+                                            currentOnGlintDetected(-1f, -1f)
+                                        }
                                     } else {
                                         currentOnGlintDetected(-1f, -1f)
-                                    }
+                                        mainHandler.post {
+                                            activeCandidates = emptyList()
+                                        }
+                                    }   
                                 } catch (e: Exception) {
                                     FileLogger.log(context, "CameraPreview", "Error analyzing frame: ${e.message}")
                                     e.printStackTrace()
@@ -1430,6 +1483,30 @@ fun CameraPreview3(
             },
             modifier = Modifier.fillMaxSize()
         )
+
+        // Overlay Canvas for showing all candidate lens reflections matching the spatial doughnut profile
+        if (activeCandidates.isNotEmpty() && (isStrobeActive || isAiLensDetected)) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                activeCandidates.forEach { offset ->
+                    val cx = offset.x * size.width
+                    val cy = offset.y * size.height
+                    
+                    // Draw a subtle amber ring
+                    drawCircle(
+                        color = Amber500.copy(alpha = 0.6f),
+                        radius = 8.dp.toPx(),
+                        center = Offset(cx, cy),
+                        style = Stroke(width = 1.5.dp.toPx())
+                    )
+                    // Draw a small dot at the center
+                    drawCircle(
+                        color = Amber500,
+                        radius = 2.dp.toPx(),
+                        center = Offset(cx, cy)
+                    )
+                }
+            }
+        }
     }
 }
 

@@ -306,9 +306,9 @@ fun BluetoothTrackerTab(viewModel: BluetoothTrackerViewModel) {
                                 Text(
                                     text = "Online Devices (${onlineDevices.size})",
                                     color = Teal500,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(vertical = 4.dp)
+                                    fontSize = 18.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    modifier = Modifier.padding(vertical = 6.dp)
                                 )
                             }
                             items(onlineDevices, key = { it.address }) { device ->
@@ -320,9 +320,9 @@ fun BluetoothTrackerTab(viewModel: BluetoothTrackerViewModel) {
                                 Text(
                                     text = "Offline Devices (${offlineDevices.size})",
                                     color = Slate400,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(top = 12.dp, bottom = 4.dp)
+                                    fontSize = 18.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    modifier = Modifier.padding(top = 16.dp, bottom = 6.dp)
                                 )
                             }
                             items(offlineDevices, key = { it.address }) { device ->
@@ -529,7 +529,7 @@ fun DeviceCard(device: BluetoothTrackerDevice, onToggleSafe: () -> Unit) {
             Column(modifier = Modifier.weight(1f)) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Text(
                         text = device.manufacturerName,
@@ -537,6 +537,25 @@ fun DeviceCard(device: BluetoothTrackerDevice, onToggleSafe: () -> Unit) {
                         fontWeight = FontWeight.Bold,
                         fontSize = 13.sp
                     )
+                    if (device.isCurrentlyActive) {
+                        Box(
+                            modifier = Modifier
+                                .background(Teal500.copy(alpha = 0.2f), RoundedCornerShape(4.dp))
+                                .border(1.dp, Teal500, RoundedCornerShape(4.dp))
+                                .padding(horizontal = 4.dp, vertical = 2.dp)
+                        ) {
+                            Text("ONLINE", color = Teal500, fontSize = 8.sp, fontWeight = FontWeight.Bold)
+                        }
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .background(Slate700.copy(alpha = 0.2f), RoundedCornerShape(4.dp))
+                                .border(1.dp, Slate700, RoundedCornerShape(4.dp))
+                                .padding(horizontal = 4.dp, vertical = 2.dp)
+                        ) {
+                            Text("OFFLINE", color = Slate400, fontSize = 8.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
                     if (device.isSuspicious) {
                         Box(
                             modifier = Modifier
@@ -556,6 +575,15 @@ fun DeviceCard(device: BluetoothTrackerDevice, onToggleSafe: () -> Unit) {
                     text = "RSSI: ${device.rssi} dBm • Seen ${device.scanCount} times",
                     color = Slate400,
                     fontSize = 10.sp
+                )
+                val timeFormatter = remember { java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US) }
+                val firstSeenStr = remember(device.firstSeen) { timeFormatter.format(java.util.Date(device.firstSeen)) }
+                val lastSeenStr = remember(device.lastSeen) { timeFormatter.format(java.util.Date(device.lastSeen)) }
+                Text(
+                    text = "First seen: $firstSeenStr  •  Last seen: $lastSeenStr",
+                    color = Slate400,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium
                 )
                 if (device.latitude != null && device.longitude != null) {
                     Row(

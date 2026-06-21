@@ -126,6 +126,10 @@ class SpyScannerViewModel(context: Context) : ViewModel(), SensorEventListener {
         _spyState.update { it.copy(isStrobeActive = enabled) }
     }
 
+    fun setGlintThreshold(value: Float) {
+        _spyState.update { it.copy(glintThreshold = value) }
+    }
+
     fun setSpyMode(mode: SpyMode) {
         _spyState.update { 
             it.copy(
