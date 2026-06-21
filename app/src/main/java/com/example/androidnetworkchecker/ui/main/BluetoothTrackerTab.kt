@@ -1,15 +1,17 @@
 package com.example.androidnetworkchecker.ui.main
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.*
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -23,30 +25,25 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Warning
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Shield
+import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
-import kotlin.math.cos
-import kotlin.math.sin
 
 // Theme Colors
 private val Slate900 = Color(0xFF0F172A)
@@ -64,11 +61,16 @@ private val Amber500 = Color(0xFFF59E0B)
 fun BluetoothTrackerTab(viewModel: BluetoothTrackerViewModel) {
     val state by viewModel.state.collectAsState()
     val context = LocalContext.current
+    var activeViewTab by rememberSaveable { mutableStateOf(0) } // 0 = List View, 1 = Map View
     var selectedCategory by rememberSaveable { mutableStateOf(0) } // 0 = All, 1 = Suspicious, 2 = Trusted
 
-    // Request permissions launcher
+    // Request permissions launcher (Bluetooth + Location)
     val permissionsToRequest = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-        arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
+        arrayOf(
+            Manifest.permission.BLUETOOTH_SCAN,
+            Manifest.permission.BLUETOOTH_CONNECT,
+            Manifest.permission.ACCESS_FINE_LOCATION
+        )
     } else {
         arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
     }
@@ -81,7 +83,7 @@ fun BluetoothTrackerTab(viewModel: BluetoothTrackerViewModel) {
             if (allGranted) {
                 viewModel.startScanning()
             } else {
-                Toast.makeText(context, "Bluetooth scan permissions are required to detect tracker tags.", Toast.LENGTH_LONG).show()
+                Toast.makeText(context, "Location and Bluetooth permissions are required to scan BLE trackers.", Toast.LENGTH_LONG).show()
             }
         }
     )
@@ -102,7 +104,7 @@ fun BluetoothTrackerTab(viewModel: BluetoothTrackerViewModel) {
             .fillMaxSize()
             .background(Slate900)
     ) {
-        // Top Tracker Heading
+        // Top Tracker Heading Row
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -110,7 +112,7 @@ fun BluetoothTrackerTab(viewModel: BluetoothTrackerViewModel) {
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column {
+            Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = "BLE Anti-Stalker Tracker",
                     color = Slate50,
@@ -118,13 +120,31 @@ fun BluetoothTrackerTab(viewModel: BluetoothTrackerViewModel) {
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    text = "Detects hidden AirTags & beacon tracking accessories",
+                    text = "GPS Map & log sync for BLE devices",
                     color = Slate400,
                     fontSize = 11.sp
                 )
             }
 
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // Export to GDrive/Wigle Button
+                IconButton(
+                    onClick = { viewModel.exportToWigleCsv(context) },
+                    modifier = Modifier
+                        .background(Slate800, CircleShape)
+                        .size(36.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Share,
+                        contentDescription = "Export Wigle CSV",
+                        tint = Teal500,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+
                 IconButton(
                     onClick = { viewModel.clearDeviceHistory() },
                     modifier = Modifier
@@ -159,94 +179,144 @@ fun BluetoothTrackerTab(viewModel: BluetoothTrackerViewModel) {
         if (!state.hasPermissions || !state.isBluetoothEnabled) {
             PermissionOnboardingCard(state = state, onRequestPermissions = { launcher.launch(permissionsToRequest) })
         } else {
-            // Radar sweeping visualizer
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(220.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                RadarVisualizer(devices = state.devices, isScanning = state.isScanning)
-            }
-
-            // Stat overview badges
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                val totalCount = state.devices.size
-                val suspCount = state.devices.count { it.isSuspicious }
-                val safeCount = state.devices.count { it.isSafe }
-
-                StatBadge(label = "Total Devices", count = totalCount, color = Slate400, modifier = Modifier.weight(1f))
-                StatBadge(label = "Suspicious", count = suspCount, color = if (suspCount > 0) Red500 else Slate400, modifier = Modifier.weight(1f))
-                StatBadge(label = "Trusted", count = safeCount, color = Emerald500, modifier = Modifier.weight(1f))
-            }
-
-            // Tabs to filter by categories
+            // View Selector Tabs (List View vs Map View)
             TabRow(
-                selectedTabIndex = selectedCategory,
+                selectedTabIndex = activeViewTab,
                 containerColor = Slate900,
                 contentColor = Teal500,
                 modifier = Modifier.padding(vertical = 4.dp)
             ) {
                 Tab(
-                    selected = selectedCategory == 0,
-                    onClick = { selectedCategory = 0 },
-                    text = { Text("All", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = if (selectedCategory == 0) Teal500 else Slate400) }
+                    selected = activeViewTab == 0,
+                    onClick = { activeViewTab = 0 },
+                    text = { Text("List View", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = if (activeViewTab == 0) Teal500 else Slate400) }
                 )
                 Tab(
-                    selected = selectedCategory == 1,
-                    onClick = { selectedCategory = 1 },
-                    text = { Text("Suspicious", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = if (selectedCategory == 1) Red500 else Slate400) }
-                )
-                Tab(
-                    selected = selectedCategory == 2,
-                    onClick = { selectedCategory = 2 },
-                    text = { Text("Trusted", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = if (selectedCategory == 2) Emerald500 else Slate400) }
+                    selected = activeViewTab == 1,
+                    onClick = { activeViewTab = 1 },
+                    text = { Text("Wigle GPS Map", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = if (activeViewTab == 1) Teal500 else Slate400) }
                 )
             }
 
-            // Device list
-            val filteredDevices = when (selectedCategory) {
-                1 -> state.devices.filter { it.isSuspicious }
-                2 -> state.devices.filter { it.isSafe }
-                else -> state.devices
-            }
+            Spacer(modifier = Modifier.height(8.dp))
 
-            if (filteredDevices.isEmpty()) {
-                Box(
+            if (activeViewTab == 0) {
+                // --- LIST VIEW ---
+                // Stat overview badges
+                Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .weight(1f),
-                    contentAlignment = Alignment.Center
+                        .padding(bottom = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Icon(Icons.Default.Bluetooth, contentDescription = null, tint = Slate700, modifier = Modifier.size(48.dp))
-                        Text(
-                            text = if (state.isScanning) "Searching for trackers..." else "Scan inactive. Tap refresh to start.",
-                            color = Slate400,
-                            fontSize = 13.sp
-                        )
+                    val totalCount = state.devices.size
+                    val suspCount = state.devices.count { it.isSuspicious }
+                    val safeCount = state.devices.count { it.isSafe }
+
+                    StatBadge(label = "Total Devices", count = totalCount, color = Slate400, modifier = Modifier.weight(1f))
+                    StatBadge(label = "Suspicious", count = suspCount, color = if (suspCount > 0) Red500 else Slate400, modifier = Modifier.weight(1f))
+                    StatBadge(label = "Trusted", count = safeCount, color = Emerald500, modifier = Modifier.weight(1f))
+                }
+
+                // Category filter row
+                TabRow(
+                    selectedTabIndex = selectedCategory,
+                    containerColor = Slate900,
+                    contentColor = Teal500,
+                    modifier = Modifier.padding(vertical = 2.dp)
+                ) {
+                    Tab(
+                        selected = selectedCategory == 0,
+                        onClick = { selectedCategory = 0 },
+                        text = { Text("All", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = if (selectedCategory == 0) Teal500 else Slate400) }
+                    )
+                    Tab(
+                        selected = selectedCategory == 1,
+                        onClick = { selectedCategory = 1 },
+                        text = { Text("Suspicious", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = if (selectedCategory == 1) Red500 else Slate400) }
+                    )
+                    Tab(
+                        selected = selectedCategory == 2,
+                        onClick = { selectedCategory = 2 },
+                        text = { Text("Trusted", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = if (selectedCategory == 2) Emerald500 else Slate400) }
+                    )
+                }
+
+                val filteredDevices = when (selectedCategory) {
+                    1 -> state.devices.filter { it.isSuspicious }
+                    2 -> state.devices.filter { it.isSafe }
+                    else -> state.devices
+                }
+
+                if (filteredDevices.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Icon(Icons.Default.Bluetooth, contentDescription = null, tint = Slate700, modifier = Modifier.size(48.dp))
+                            Text(
+                                text = if (state.isScanning) "Searching for trackers..." else "Scan inactive. Tap refresh to start.",
+                                color = Slate400,
+                                fontSize = 13.sp
+                            )
+                        }
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        contentPadding = PaddingValues(top = 8.dp, bottom = 24.dp)
+                    ) {
+                        items(filteredDevices, key = { it.address }) { device ->
+                            DeviceCard(device = device, onToggleSafe = { viewModel.toggleSafeDevice(device.address) })
+                        }
                     }
                 }
             } else {
-                LazyColumn(
+                // --- WIGLE GPS MAP VIEW ---
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                    contentPadding = PaddingValues(top = 8.dp, bottom = 24.dp)
+                        .weight(1f)
+                        .clip(RoundedCornerShape(12.dp))
+                        .border(1.dp, Slate700, RoundedCornerShape(12.dp))
                 ) {
-                    items(filteredDevices, key = { it.address }) { device ->
-                        DeviceCard(device = device, onToggleSafe = { viewModel.toggleSafeDevice(device.address) })
-                    }
+                    MapViewContainer(viewModel = viewModel, modifier = Modifier.fillMaxSize())
                 }
             }
         }
     }
+}
+
+@SuppressLint("SetJavaScriptEnabled")
+@Composable
+fun MapViewContainer(viewModel: BluetoothTrackerViewModel, modifier: Modifier = Modifier) {
+    AndroidView(
+        factory = { ctx ->
+            WebView(ctx).apply {
+                webViewClient = WebViewClient()
+                settings.javaScriptEnabled = true
+                settings.domStorageEnabled = true
+                settings.allowFileAccess = true
+                
+                // Add native Javascript Bridge Interface to access map json
+                addJavascriptInterface(object {
+                    @android.webkit.JavascriptInterface
+                    fun getDevicesJson(): String {
+                        return viewModel.getDevicesJson()
+                    }
+                }, "AndroidInterface")
+
+                loadUrl("file:///android_asset/map.html")
+            }
+        },
+        modifier = modifier
+    )
 }
 
 @Composable
@@ -279,7 +349,7 @@ fun PermissionOnboardingCard(state: BluetoothTrackerState, onRequestPermissions:
             }
 
             Text(
-                text = "Anti-Stalker Tracker Setup",
+                text = "Anti-Stalker GPS Map Setup",
                 color = Slate50,
                 fontSize = 18.sp,
                 fontWeight = FontWeight.Bold,
@@ -287,7 +357,7 @@ fun PermissionOnboardingCard(state: BluetoothTrackerState, onRequestPermissions:
             )
 
             Text(
-                text = "To search for commercial BLE trackers (such as Apple AirTags or Tiles) moving near you, the system requires Bluetooth scanning and coarse location authorization. No location data is collected or shared.",
+                text = "To track BLE devices, plot them on the map, and compile Wigle logs, this utility requires location permissions. We pin device markers at the point of strongest signal strength.",
                 color = Slate400,
                 fontSize = 13.sp,
                 lineHeight = 18.sp,
@@ -312,160 +382,6 @@ fun PermissionOnboardingCard(state: BluetoothTrackerState, onRequestPermissions:
                     textAlign = TextAlign.Center
                 )
             }
-        }
-    }
-}
-
-@Composable
-fun StatBadge(label: String, count: Int, color: Color, modifier: Modifier = Modifier) {
-    Card(
-        colors = CardDefaults.cardColors(containerColor = Slate800),
-        modifier = modifier.border(1.dp, Slate700, RoundedCornerShape(8.dp)),
-        shape = RoundedCornerShape(8.dp)
-    ) {
-        Column(
-            modifier = Modifier.padding(8.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Text(text = label, color = Slate400, fontSize = 9.sp, fontWeight = FontWeight.SemiBold)
-            Text(text = count.toString(), color = color, fontSize = 16.sp, fontWeight = FontWeight.Black)
-        }
-    }
-}
-
-@Composable
-fun RadarVisualizer(devices: List<BluetoothTrackerDevice>, isScanning: Boolean) {
-    // 0 to 360 degree sweeping angle transition
-    val sweepTransition = rememberInfiniteTransition(label = "RadarSweep")
-    val sweepAngle by sweepTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(4000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "sweepAngle"
-    )
-
-    val wavePulseTransition = rememberInfiniteTransition(label = "WavePulse")
-    val waveScale by wavePulseTransition.animateFloat(
-        initialValue = 0.2f,
-        targetValue = 1.0f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(2000, easing = EaseOutQuad),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "waveScale"
-    )
-
-    Canvas(modifier = Modifier.size(190.dp)) {
-        val center = Offset(size.width / 2f, size.height / 2f)
-        val radius = size.minDimension / 2f
-
-        // Draw background radar scope circles
-        drawCircle(
-            color = Slate800,
-            radius = radius
-        )
-        drawCircle(
-            color = Slate700.copy(alpha = 0.5f),
-            radius = radius,
-            style = Stroke(width = 1.5.dp.toPx())
-        )
-        drawCircle(
-            color = Slate700.copy(alpha = 0.3f),
-            radius = radius * 0.66f,
-            style = Stroke(width = 1.dp.toPx())
-        )
-        drawCircle(
-            color = Slate700.copy(alpha = 0.2f),
-            radius = radius * 0.33f,
-            style = Stroke(width = 1.dp.toPx())
-        )
-
-        // Draw crosshairs
-        drawLine(
-            color = Slate700.copy(alpha = 0.5f),
-            start = Offset(center.x, 0f),
-            end = Offset(center.x, size.height),
-            strokeWidth = 1.dp.toPx()
-        )
-        drawLine(
-            color = Slate700.copy(alpha = 0.5f),
-            start = Offset(0f, center.y),
-            end = Offset(size.width, center.y),
-            strokeWidth = 1.dp.toPx()
-        )
-
-        // Draw pulse scan waves if scanning
-        if (isScanning) {
-            drawCircle(
-                color = Teal500.copy(alpha = 0.15f * (1.0f - waveScale)),
-                radius = radius * waveScale
-            )
-
-            // Sweep visualizer arc
-            drawArc(
-                brush = Brush.sweepGradient(
-                    0f to Color.Transparent,
-                    0.8f to Teal500.copy(alpha = 0.05f),
-                    1f to Teal500.copy(alpha = 0.35f),
-                    center = center
-                ),
-                startAngle = sweepAngle - 30f,
-                sweepAngle = 30f,
-                useCenter = true
-            )
-        }
-
-        // Draw user/device anchor in center
-        drawCircle(
-            color = Teal500,
-            radius = 6.dp.toPx()
-        )
-        drawCircle(
-            color = Teal500.copy(alpha = 0.2f),
-            radius = 12.dp.toPx()
-        )
-
-        // Plot tracked BLE devices onto the radar
-        devices.forEach { device ->
-            // Compute a stable angle for each MAC address
-            val deviceAngle = (device.address.hashCode() % 360).toFloat()
-            val angleRad = Math.toRadians(deviceAngle.toDouble())
-
-            // Compute radial fraction (0.1 to 0.95) based on estimated distance (max 20m)
-            val distanceFraction = (device.estimatedDistanceMeters / 15.0).coerceIn(0.1, 0.95)
-            val deviceRadius = (radius * distanceFraction).toFloat()
-
-            val x = center.x + deviceRadius * cos(angleRad).toFloat()
-            val y = center.y + deviceRadius * sin(angleRad).toFloat()
-
-            // Calculate sweep proximity to trigger brightness pulse
-            val angleDiff = Math.abs((sweepAngle - deviceAngle + 180) % 360 - 180)
-            val brightnessFactor = if (isScanning && angleDiff < 30) {
-                1.0f - (angleDiff / 30f) * 0.7f
-            } else {
-                0.3f
-            }
-
-            val dotColor = when {
-                device.isSafe -> Emerald500
-                device.isSuspicious -> Red500
-                else -> Indigo500
-            }
-
-            // Draw glowing radar blips
-            drawCircle(
-                color = dotColor.copy(alpha = brightnessFactor * 0.3f),
-                radius = 10.dp.toPx(),
-                center = Offset(x, y)
-            )
-            drawCircle(
-                color = dotColor.copy(alpha = brightnessFactor),
-                radius = 5.dp.toPx(),
-                center = Offset(x, y)
-            )
         }
     }
 }
@@ -550,10 +466,30 @@ fun DeviceCard(device: BluetoothTrackerDevice, onToggleSafe: () -> Unit) {
                     fontSize = 11.sp
                 )
                 Text(
-                    text = "Signals: ${device.rssi} dBm • Seen ${device.scanCount} times",
+                    text = "RSSI: ${device.rssi} dBm • Seen ${device.scanCount} times",
                     color = Slate400,
                     fontSize = 10.sp
                 )
+                if (device.latitude != null && device.longitude != null) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(2.dp),
+                        modifier = Modifier.padding(top = 2.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.LocationOn,
+                            contentDescription = "GPS Coordinates",
+                            tint = Teal500,
+                            modifier = Modifier.size(10.dp)
+                        )
+                        Text(
+                            text = String.format(java.util.Locale.US, "GPS: %.4f, %.4f", device.latitude, device.longitude),
+                            color = Teal500,
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
             }
 
             // Right side distance indicator and trust action button
@@ -588,6 +524,23 @@ fun DeviceCard(device: BluetoothTrackerDevice, onToggleSafe: () -> Unit) {
                     )
                 }
             }
+        }
+    }
+}
+
+@Composable
+fun StatBadge(label: String, count: Int, color: Color, modifier: Modifier = Modifier) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = Slate800),
+        modifier = modifier.border(1.dp, Slate700, RoundedCornerShape(8.dp)),
+        shape = RoundedCornerShape(8.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(text = label, color = Slate400, fontSize = 9.sp, fontWeight = FontWeight.SemiBold)
+            Text(text = count.toString(), color = color, fontSize = 16.sp, fontWeight = FontWeight.Black)
         }
     }
 }

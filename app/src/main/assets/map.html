@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        html, body, #map {
+            height: 100%;
+            width: 100%;
+            margin: 0;
+            padding: 0;
+            background-color: #0f172a;
+        }
+        .leaflet-container {
+            background-color: #0f172a !important;
+        }
+        .custom-popup .leaflet-popup-content-wrapper {
+            background: #1e293b !important;
+            color: #f8fafc !important;
+            border: 1px solid #334155 !important;
+            border-radius: 8px !important;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            font-size: 11px;
+            line-height: 1.4;
+        }
+        .custom-popup .leaflet-popup-tip {
+            background: #1e293b !important;
+        }
+        .custom-div-icon {
+            background: transparent;
+            border: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    <script>
+        var map = L.map('map', {
+            zoomControl: false,
+            attributionControl: false
+        }).setView([0, 0], 2);
+
+        // Load dark styled map tiles
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+            maxZoom: 20
+        }).addTo(map);
+
+        var markers = {};
+        var hasCentered = false;
+
+        function loadMarkers() {
+            if (window.AndroidInterface) {
+                try {
+                    var jsonStr = window.AndroidInterface.getDevicesJson();
+                    var devices = JSON.parse(jsonStr);
+                    var latLngs = [];
+
+                    devices.forEach(function(device) {
+                        if (device.latitude && device.longitude) {
+                            var id = device.address;
+                            var latlng = [device.latitude, device.longitude];
+                            latLngs.push(latlng);
+
+                            var color = "#6366f1"; // Default Indigo
+                            if (device.isSafe) {
+                                color = "#10b981"; // Trusted Emerald
+                            } else if (device.isSuspicious) {
+                                color = "#ef4444"; // Stalker Red
+                            }
+
+                            // Glowing dot marker HTML
+                            var markerHtml = '<div style="' +
+                                'background-color: ' + color + ';' +
+                                'width: 12px;' +
+                                'height: 12px;' +
+                                'border-radius: 50%;' +
+                                'border: 2px solid #ffffff;' +
+                                'box-shadow: 0 0 8px ' + color + ';' +
+                                '"></div>';
+
+                            var customIcon = L.divIcon({
+                                html: markerHtml,
+                                className: 'custom-div-icon',
+                                iconSize: [16, 16],
+                                iconAnchor: [8, 8]
+                            });
+
+                            var popupContent = '<strong>' + device.manufacturerName + '</strong><br/>' +
+                                               'MAC: ' + device.address + '<br/>' +
+                                               (device.name ? 'Name: ' + device.name + '<br/>' : '') +
+                                               'RSSI: ' + device.rssi + ' dBm<br/>' +
+                                               'Distance: ~' + device.estimatedDistanceMeters + 'm<br/>' +
+                                               'Times Seen: ' + device.scanCount;
+
+                            if (markers[id]) {
+                                markers[id].setLatLng(latlng);
+                                markers[id].setPopupContent(popupContent);
+                            } else {
+                                var m = L.marker(latlng, { icon: customIcon })
+                                    .bindPopup(popupContent, { className: 'custom-popup' })
+                                    .addTo(map);
+                                markers[id] = m;
+                            }
+                        }
+                    });
+
+                    // Auto-focus and center bounds on first launch with markers
+                    if (latLngs.length > 0 && !hasCentered) {
+                        var bounds = L.latLngBounds(latLngs);
+                        map.fitBounds(bounds, { padding: [40, 40], maxZoom: 17 });
+                        hasCentered = true;
+                    }
+                } catch (e) {
+                    console.error("Error in loadMarkers: " + e.message);
+                }
+            }
+        }
+
+        // Poll every 3 seconds for new GPS plots
+        setInterval(loadMarkers, 3000);
+        
+        // Initial call
+        setTimeout(loadMarkers, 500);
+    </script>
+</body>
+</html>
