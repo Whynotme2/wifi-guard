@@ -108,6 +108,7 @@ fun BluetoothTrackerTab(viewModel: BluetoothTrackerViewModel) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                .padding(horizontal = 16.dp)
                 .padding(bottom = 12.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
@@ -192,14 +193,19 @@ fun BluetoothTrackerTab(viewModel: BluetoothTrackerViewModel) {
         }
 
         if (!state.hasPermissions || !state.isBluetoothEnabled) {
-            PermissionOnboardingCard(state = state, onRequestPermissions = { launcher.launch(permissionsToRequest) })
+            Box(modifier = Modifier.padding(horizontal = 16.dp)) {
+                PermissionOnboardingCard(state = state, onRequestPermissions = { launcher.launch(permissionsToRequest) })
+            }
         } else {
             // View Selector Tabs (List View vs Map View)
             TabRow(
                 selectedTabIndex = activeViewTab,
                 containerColor = Slate900,
                 contentColor = Teal500,
-                modifier = Modifier.padding(vertical = 4.dp)
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
+                    .padding(vertical = 4.dp)
             ) {
                 Tab(
                     selected = activeViewTab == 0,
@@ -221,6 +227,7 @@ fun BluetoothTrackerTab(viewModel: BluetoothTrackerViewModel) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
+                        .padding(horizontal = 16.dp)
                         .padding(bottom = 8.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
@@ -238,7 +245,10 @@ fun BluetoothTrackerTab(viewModel: BluetoothTrackerViewModel) {
                     selectedTabIndex = selectedCategory,
                     containerColor = Slate900,
                     contentColor = Teal500,
-                    modifier = Modifier.padding(vertical = 2.dp)
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp)
+                        .padding(vertical = 2.dp)
                 ) {
                     Tab(
                         selected = selectedCategory == 0,
@@ -267,6 +277,7 @@ fun BluetoothTrackerTab(viewModel: BluetoothTrackerViewModel) {
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
+                            .padding(horizontal = 16.dp)
                             .weight(1f),
                         contentAlignment = Alignment.Center
                     ) {
@@ -283,6 +294,7 @@ fun BluetoothTrackerTab(viewModel: BluetoothTrackerViewModel) {
                     LazyColumn(
                         modifier = Modifier
                             .fillMaxWidth()
+                            .padding(horizontal = 16.dp)
                             .weight(1f),
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                         contentPadding = PaddingValues(top = 8.dp, bottom = 24.dp)
@@ -298,10 +310,12 @@ fun BluetoothTrackerTab(viewModel: BluetoothTrackerViewModel) {
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f)
-                        .clip(RoundedCornerShape(12.dp))
-                        .border(1.dp, Slate700, RoundedCornerShape(12.dp))
                 ) {
-                    MapViewContainer(viewModel = viewModel, modifier = Modifier.fillMaxSize())
+                    MapViewContainer(
+                        viewModel = viewModel,
+                        devices = state.devices,
+                        modifier = Modifier.fillMaxSize()
+                    )
                 }
             }
         }
@@ -310,18 +324,38 @@ fun BluetoothTrackerTab(viewModel: BluetoothTrackerViewModel) {
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-fun MapViewContainer(viewModel: BluetoothTrackerViewModel, modifier: Modifier = Modifier) {
+fun MapViewContainer(
+    viewModel: BluetoothTrackerViewModel,
+    devices: List<BluetoothTrackerDevice>,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val htmlContent = remember {
+        try {
+            val mapHtml = context.assets.open("map.html").bufferedReader().use { it.readText() }
+            val css = context.assets.open("leaflet.css").bufferedReader().use { it.readText() }
+            val js = context.assets.open("leaflet.js").bufferedReader().use { it.readText() }
+            
+            mapHtml
+                .replace("<link rel=\"stylesheet\" href=\"leaflet.css\" />", "<style>$css</style>")
+                .replace("<script src=\"leaflet.js\"></script>", "<script>$js</script>")
+        } catch (e: Exception) {
+            "<html><body><h3>Error loading map assets: ${e.localizedMessage}</h3></body></html>"
+        }
+    }
+
     AndroidView(
         factory = { ctx ->
             WebView(ctx).apply {
+                layoutParams = android.view.ViewGroup.LayoutParams(
+                    android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                    android.view.ViewGroup.LayoutParams.MATCH_PARENT
+                )
                 webViewClient = WebViewClient()
                 settings.javaScriptEnabled = true
                 settings.domStorageEnabled = true
                 settings.allowFileAccess = true
-                settings.allowFileAccessFromFileURLs = true
-                settings.allowUniversalAccessFromFileURLs = true
-                
-                // Add native Javascript Bridge Interface to access map json
+
                 addJavascriptInterface(object {
                     @android.webkit.JavascriptInterface
                     fun getDevicesJson(): String {
@@ -329,10 +363,19 @@ fun MapViewContainer(viewModel: BluetoothTrackerViewModel, modifier: Modifier = 
                     }
                 }, "AndroidInterface")
 
-                loadUrl("file:///android_asset/map.html")
+                loadDataWithBaseURL(
+                    "https://appassets.androidplatform.net/",
+                    htmlContent,
+                    "text/html",
+                    "UTF-8",
+                    null
+                )
             }
         },
-        modifier = modifier
+        modifier = modifier,
+        update = { webView ->
+            webView.evaluateJavascript("if (typeof loadMarkers === 'function') { loadMarkers(); }", null)
+        }
     )
 }
 

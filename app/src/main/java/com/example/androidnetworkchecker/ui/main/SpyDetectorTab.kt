@@ -118,11 +118,10 @@ fun SpyDetectorTab(viewModel: SpyScannerViewModel, bluetoothViewModel: Bluetooth
         Box(
             modifier = Modifier
                 .weight(1f)
-                .padding(horizontal = 16.dp)
         ) {
             when (activeSubTab) {
-                0 -> WallEmfScannerView(emfState = emfState, viewModel = viewModel)
-                1 -> OpticsCamView(spyState = spyState, viewModel = viewModel)
+                0 -> Box(modifier = Modifier.padding(horizontal = 16.dp)) { WallEmfScannerView(emfState = emfState, viewModel = viewModel) }
+                1 -> Box(modifier = Modifier.padding(horizontal = 16.dp)) { OpticsCamView(spyState = spyState, viewModel = viewModel) }
                 2 -> BluetoothTrackerTab(viewModel = bluetoothViewModel)
             }
         }

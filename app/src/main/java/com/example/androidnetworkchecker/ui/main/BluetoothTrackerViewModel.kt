@@ -88,7 +88,8 @@ class BluetoothTrackerViewModel(private val context: Context) : ViewModel() {
         var latitude: Double? = null,
         var longitude: Double? = null,
         var maxRssi: Int = -999,
-        var lastIncrementTime: Long = 0
+        var lastIncrementTime: Long = 0,
+        var sessionIncremented: Boolean = false
     )
 
     // GPS location listener
@@ -265,12 +266,13 @@ class BluetoothTrackerViewModel(private val context: Context) : ViewModel() {
         val name = result.scanRecord?.deviceName ?: device.name
         val rssi = result.rssi
 
-        // Reject invalid/corrupted packages (RSSI = 127 is TX_POWER_NOT_PRESENT in some drivers, RSSI must be negative)
+        // Reject invalid/corrupted packages (RSSI = 127, RSSI must be negative)
         if (rssi == 127 || rssi > 0) return
 
         val manufacturerName = getManufacturerName(result)
         val now = System.currentTimeMillis()
 
+        var shouldSave = false
         synchronized(deviceDatabase) {
             val existing = deviceDatabase[address]
             val currentLoc = lastLocation
@@ -281,16 +283,27 @@ class BluetoothTrackerViewModel(private val context: Context) : ViewModel() {
                     existing.rssiHistory.removeAt(0)
                 }
 
-                // Rate-limit scanCount increments: increment at most once every 15 seconds (15000 ms) per device
-                if (now - existing.lastIncrementTime >= 15000) {
+                // Increment rules:
+                // 1. Every time the app starts, the first scan of an existing device increments scanCount.
+                // 2. While running, it only increments once every 2 hours (7,200,000 ms).
+                if (!existing.sessionIncremented) {
                     existing.scanCount += 1
                     existing.lastIncrementTime = now
+                    existing.sessionIncremented = true
+                    shouldSave = true
+                } else if (now - existing.lastIncrementTime >= 7200000L) {
+                    existing.scanCount += 1
+                    existing.lastIncrementTime = now
+                    shouldSave = true
                 }
 
                 // Save coordinates at point of strongest signal strength
                 if (rssi > existing.maxRssi && currentLoc != null) {
-                    existing.latitude = currentLoc.latitude
-                    existing.longitude = currentLoc.longitude
+                    if (existing.latitude != currentLoc.latitude || existing.longitude != currentLoc.longitude) {
+                        existing.latitude = currentLoc.latitude
+                        existing.longitude = currentLoc.longitude
+                        shouldSave = true
+                    }
                     existing.maxRssi = rssi
                 }
             } else {
@@ -305,12 +318,16 @@ class BluetoothTrackerViewModel(private val context: Context) : ViewModel() {
                     latitude = currentLoc?.latitude,
                     longitude = currentLoc?.longitude,
                     maxRssi = rssi,
-                    lastIncrementTime = now
+                    lastIncrementTime = now,
+                    sessionIncremented = true
                 )
+                shouldSave = true
             }
         }
         updateDeviceList()
-        saveDatabaseLocally()
+        if (shouldSave) {
+            saveDatabaseLocally()
+        }
     }
 
     private fun updateDeviceList() {
@@ -321,10 +338,8 @@ class BluetoothTrackerViewModel(private val context: Context) : ViewModel() {
                 val txPower = -60
                 val estimatedDistance = calculateDistance(avgRssi, txPower)
                 
-                // Stalker detection rule:
-                // Seen for >= 2 minutes (120000 ms) and average estimated distance is within 10 meters
-                val timeSpan = now - data.firstSeen
-                val isSuspicious = timeSpan >= 120000 && estimatedDistance <= 10.0 && !safeDevices.contains(data.address)
+                // Stalker detection rule: Stalking warning should trigger when the device has been detected 20+ times
+                val isSuspicious = data.scanCount >= 20 && !safeDevices.contains(data.address)
 
                 // Currently active if seen within the last 30 seconds
                 val isCurrentlyActive = (now - data.lastSeen) < 30000
@@ -347,7 +362,7 @@ class BluetoothTrackerViewModel(private val context: Context) : ViewModel() {
             }
         }
 
-        // Sort checklist criteria: Times Found (scanCount) Descending, then Distance Ascending
+        // Sort: Times Found (scanCount) Descending, then Distance Ascending
         val sortedList = list.sortedWith(
             compareByDescending<BluetoothTrackerDevice> { it.scanCount }
                 .thenBy { it.estimatedDistanceMeters }
@@ -379,7 +394,6 @@ class BluetoothTrackerViewModel(private val context: Context) : ViewModel() {
                     }
                 }
                 0x0075 -> {
-                    // Check if it's a SmartTag specifically or just a generic Samsung TV/appliance
                     val name = record.deviceName?.lowercase() ?: ""
                     if (name.contains("smarttag") || name.contains("tag")) {
                         "Samsung SmartTag"
@@ -495,7 +509,8 @@ class BluetoothTrackerViewModel(private val context: Context) : ViewModel() {
                             latitude = latitude,
                             longitude = longitude,
                             maxRssi = -75,
-                            lastIncrementTime = lastSeen
+                            lastIncrementTime = lastSeen,
+                            sessionIncremented = false // Set false so it increments once on new session start
                         )
                     }
                 }
@@ -530,8 +545,12 @@ class BluetoothTrackerViewModel(private val context: Context) : ViewModel() {
 
         val csvData = csvBuilder.toString()
         val filename = "wifiguard_ble_scan_${System.currentTimeMillis()}.csv"
-        val file = File(context.getExternalFilesDir(null), filename)
 
+        // Automatically save locally to the public Downloads/WifiGuard/ folder
+        saveToPublicDownloads(context, filename, csvData, "text/csv")
+
+        // Trigger Android Share Chooser for sync (e.g. Google Drive)
+        val file = File(context.getExternalFilesDir(null), filename)
         try {
             file.writeText(csvData)
             val fileUri = FileProvider.getUriForFile(
@@ -548,7 +567,7 @@ class BluetoothTrackerViewModel(private val context: Context) : ViewModel() {
             }
             context.startActivity(Intent.createChooser(intent, "Upload Wigle CSV to Google Drive"))
         } catch (e: Exception) {
-            Toast.makeText(context, "Failed to write export log: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
+            Toast.makeText(context, "Failed to share log file: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -618,8 +637,12 @@ class BluetoothTrackerViewModel(private val context: Context) : ViewModel() {
 
         val kmlData = kmlBuilder.toString()
         val filename = "wifiguard_ble_scan_${System.currentTimeMillis()}.kml"
-        val file = File(context.getExternalFilesDir(null), filename)
 
+        // Automatically save locally to public Downloads/WifiGuard/ folder
+        saveToPublicDownloads(context, filename, kmlData, "application/vnd.google-earth.kml+xml")
+
+        // Trigger Android Share Chooser for sync (e.g. Google Drive)
+        val file = File(context.getExternalFilesDir(null), filename)
         try {
             file.writeText(kmlData)
             val fileUri = FileProvider.getUriForFile(
@@ -636,7 +659,46 @@ class BluetoothTrackerViewModel(private val context: Context) : ViewModel() {
             }
             context.startActivity(Intent.createChooser(intent, "Upload KML to Google Drive"))
         } catch (e: Exception) {
-            Toast.makeText(context, "Failed to write KML log: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
+            Toast.makeText(context, "Failed to share KML file: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    // MediaStore API helper that writes files into the public Downloads/WifiGuard folder without needing permissions
+    private fun saveToPublicDownloads(context: Context, filename: String, content: String, mimeType: String) {
+        val resolver = context.contentResolver
+        val contentValues = android.content.ContentValues().apply {
+            put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, filename)
+            put(android.provider.MediaStore.MediaColumns.MIME_TYPE, mimeType)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, android.os.Environment.DIRECTORY_DOWNLOADS + "/WifiGuard")
+            }
+        }
+        
+        try {
+            val uri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                resolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
+            } else {
+                val downloadDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
+                val wifiGuardDir = File(downloadDir, "WifiGuard")
+                if (!wifiGuardDir.exists()) wifiGuardDir.mkdirs()
+                val file = File(wifiGuardDir, filename)
+                file.writeText(content)
+                null
+            }
+
+            if (uri != null) {
+                resolver.openOutputStream(uri)?.use { outputStream ->
+                    outputStream.write(content.toByteArray())
+                }
+            }
+            
+            viewModelScope.launch(Dispatchers.Main) {
+                Toast.makeText(context, "Saved to Downloads/WifiGuard/$filename", Toast.LENGTH_SHORT).show()
+            }
+        } catch (e: Exception) {
+            viewModelScope.launch(Dispatchers.Main) {
+                Toast.makeText(context, "Saved locally failed: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
+            }
         }
     }
 
