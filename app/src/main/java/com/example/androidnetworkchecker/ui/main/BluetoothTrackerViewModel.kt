@@ -21,6 +21,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -86,7 +87,8 @@ class BluetoothTrackerViewModel(private val context: Context) : ViewModel() {
         val manufacturerName: String,
         var latitude: Double? = null,
         var longitude: Double? = null,
-        var maxRssi: Int = -999
+        var maxRssi: Int = -999,
+        var lastIncrementTime: Long = 0
     )
 
     // GPS location listener
@@ -102,6 +104,7 @@ class BluetoothTrackerViewModel(private val context: Context) : ViewModel() {
 
     init {
         checkStatus()
+        loadDatabaseLocally()
         startPeriodicCleanup()
     }
 
@@ -129,6 +132,7 @@ class BluetoothTrackerViewModel(private val context: Context) : ViewModel() {
             safeDevices.add(address)
         }
         updateDeviceList()
+        saveDatabaseLocally()
     }
 
     fun clearDeviceHistory() {
@@ -136,6 +140,7 @@ class BluetoothTrackerViewModel(private val context: Context) : ViewModel() {
             deviceDatabase.clear()
         }
         updateDeviceList()
+        saveDatabaseLocally()
     }
 
     private fun hasRequiredPermissions(): Boolean {
@@ -259,6 +264,10 @@ class BluetoothTrackerViewModel(private val context: Context) : ViewModel() {
         val address = device.address
         val name = result.scanRecord?.deviceName ?: device.name
         val rssi = result.rssi
+
+        // Reject invalid/corrupted packages (RSSI = 127 is TX_POWER_NOT_PRESENT in some drivers, RSSI must be negative)
+        if (rssi == 127 || rssi > 0) return
+
         val manufacturerName = getManufacturerName(result)
         val now = System.currentTimeMillis()
 
@@ -267,11 +276,17 @@ class BluetoothTrackerViewModel(private val context: Context) : ViewModel() {
             val currentLoc = lastLocation
             if (existing != null) {
                 existing.lastSeen = now
-                existing.scanCount += 1
                 existing.rssiHistory.add(rssi)
                 if (existing.rssiHistory.size > 15) {
                     existing.rssiHistory.removeAt(0)
                 }
+
+                // Rate-limit scanCount increments: increment at most once every 15 seconds (15000 ms) per device
+                if (now - existing.lastIncrementTime >= 15000) {
+                    existing.scanCount += 1
+                    existing.lastIncrementTime = now
+                }
+
                 // Save coordinates at point of strongest signal strength
                 if (rssi > existing.maxRssi && currentLoc != null) {
                     existing.latitude = currentLoc.latitude
@@ -289,11 +304,13 @@ class BluetoothTrackerViewModel(private val context: Context) : ViewModel() {
                     manufacturerName = manufacturerName,
                     latitude = currentLoc?.latitude,
                     longitude = currentLoc?.longitude,
-                    maxRssi = rssi
+                    maxRssi = rssi,
+                    lastIncrementTime = now
                 )
             }
         }
         updateDeviceList()
+        saveDatabaseLocally()
     }
 
     private fun updateDeviceList() {
@@ -358,14 +375,22 @@ class BluetoothTrackerViewModel(private val context: Context) : ViewModel() {
                     if (data != null && data.size > 2 && data[0] == 0x12.toByte() && data[1] == 0x19.toByte()) {
                         "Apple AirTag"
                     } else {
-                        "Apple Device (FindMy)"
+                        "Apple Device"
                     }
                 }
-                0x0075 -> "Samsung SmartTag"
-                0x00E0 -> "Google Tracker"
-                0x0006 -> "Microsoft Beacon"
+                0x0075 -> {
+                    // Check if it's a SmartTag specifically or just a generic Samsung TV/appliance
+                    val name = record.deviceName?.lowercase() ?: ""
+                    if (name.contains("smarttag") || name.contains("tag")) {
+                        "Samsung SmartTag"
+                    } else {
+                        "Samsung Device"
+                    }
+                }
+                0x00E0 -> "Google Device"
+                0x0006 -> "Microsoft Device"
                 0x0001 -> "Nokia BLE Device"
-                0x0059 -> "Nordic Beacon"
+                0x0059 -> "Nordic BLE Device"
                 else -> "Generic BLE (ID: 0x${Integer.toHexString(id).uppercase()})"
             }
         }
@@ -376,7 +401,6 @@ class BluetoothTrackerViewModel(private val context: Context) : ViewModel() {
                 val uuidStr = uuid.toString().lowercase()
                 if (uuidStr.contains("feed") || uuidStr.contains("fec9")) return "Tile Tracker"
                 if (uuidStr.contains("fd5a")) return "Samsung SmartTag"
-                if (uuidStr.contains("0000fd5a") || uuidStr.contains("0000feed")) return "BLE Tracker Tag"
             }
         }
 
@@ -391,7 +415,7 @@ class BluetoothTrackerViewModel(private val context: Context) : ViewModel() {
         }
     }
 
-    // JSON exporter string generator for Leaflet map integration
+    // JSON exporter string generator for Leaflet map WebView
     fun getDevicesJson(): String {
         val list = state.value.devices
         val sb = StringBuilder()
@@ -419,6 +443,69 @@ class BluetoothTrackerViewModel(private val context: Context) : ViewModel() {
         return sb.toString()
     }
 
+    // Persist scanned devices list to local app-private storage folder
+    private fun saveDatabaseLocally() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val file = File(context.filesDir, "ble_devices_local_db.csv")
+            val sb = StringBuilder()
+            synchronized(deviceDatabase) {
+                deviceDatabase.values.forEach { dev ->
+                    // Format: MAC|Name|FirstSeen|LastSeen|ScanCount|Manufacturer|Latitude|Longitude
+                    val nameStr = dev.name ?: ""
+                    val latStr = dev.latitude?.toString() ?: ""
+                    val lonStr = dev.longitude?.toString() ?: ""
+                    sb.append("${dev.address}|${nameStr}|${dev.firstSeen}|${dev.lastSeen}|${dev.scanCount}|${dev.manufacturerName}|${latStr}|${lonStr}\n")
+                }
+            }
+            try {
+                file.writeText(sb.toString())
+            } catch (e: Exception) {
+                // Ignore
+            }
+        }
+    }
+
+    // Load persisted scanned devices history on initialization
+    private fun loadDatabaseLocally() {
+        val file = File(context.filesDir, "ble_devices_local_db.csv")
+        if (!file.exists()) return
+        try {
+            val lines = file.readLines()
+            synchronized(deviceDatabase) {
+                lines.forEach { line ->
+                    val tokens = line.split("|")
+                    if (tokens.size >= 8) {
+                        val address = tokens[0]
+                        val name = tokens[1].ifEmpty { null }
+                        val firstSeen = tokens[2].toLongOrNull() ?: System.currentTimeMillis()
+                        val lastSeen = tokens[3].toLongOrNull() ?: System.currentTimeMillis()
+                        val scanCount = tokens[4].toIntOrNull() ?: 1
+                        val manufacturerName = tokens[5]
+                        val latitude = tokens[6].toDoubleOrNull()
+                        val longitude = tokens[7].toDoubleOrNull()
+                        
+                        deviceDatabase[address] = DeviceTrackingData(
+                            address = address,
+                            name = name,
+                            firstSeen = firstSeen,
+                            lastSeen = lastSeen,
+                            scanCount = scanCount,
+                            rssiHistory = mutableListOf(-75), // Initial fallback RSSI for restored record
+                            manufacturerName = manufacturerName,
+                            latitude = latitude,
+                            longitude = longitude,
+                            maxRssi = -75,
+                            lastIncrementTime = lastSeen
+                        )
+                    }
+                }
+            }
+            updateDeviceList()
+        } catch (e: Exception) {
+            // Ignore
+        }
+    }
+
     // Exports scan history to Wigle-compatible CSV and shares with file chooser (e.g., GDrive)
     fun exportToWigleCsv(context: Context) {
         val list = state.value.devices
@@ -428,10 +515,7 @@ class BluetoothTrackerViewModel(private val context: Context) : ViewModel() {
         }
 
         val csvBuilder = StringBuilder()
-        // Wigle CSV Row 1: App details header
         csvBuilder.append("WigleWifi-1.4,appRelease=1.0,model=${Build.MODEL},device=${Build.DEVICE},display=${Build.DISPLAY},board=${Build.BOARD},brand=${Build.BRAND}\n")
-        
-        // Wigle CSV Row 2: Columns format
         csvBuilder.append("MAC,SSID,AuthMode,FirstSeen,Channel,Frequency,RSSI,Latitude,Longitude,Altitude,Accuracy,Type\n")
         
         val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
@@ -465,6 +549,94 @@ class BluetoothTrackerViewModel(private val context: Context) : ViewModel() {
             context.startActivity(Intent.createChooser(intent, "Upload Wigle CSV to Google Drive"))
         } catch (e: Exception) {
             Toast.makeText(context, "Failed to write export log: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    // Exports coordinates of BLE devices to KML format for Google Earth/Google Maps
+    fun exportToKml(context: Context) {
+        val list = state.value.devices
+        val mappedDevices = list.filter { it.latitude != null && it.longitude != null }
+        if (mappedDevices.isEmpty()) {
+            Toast.makeText(context, "No mapped GPS devices to export to KML.", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val kmlBuilder = StringBuilder()
+        kmlBuilder.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
+        kmlBuilder.append("<kml xmlns=\"http://www.opengis.net/kml/2.2\">\n")
+        kmlBuilder.append("  <Document>\n")
+        kmlBuilder.append("    <name>WifiGuard BLE Geoplotted Log</name>\n")
+        kmlBuilder.append("    <description>Bluetooth LE trackers scanned and geolocated by WifiGuard</description>\n")
+        
+        // Style configurations for markers
+        kmlBuilder.append("    <Style id=\"suspicious_marker\">\n")
+        kmlBuilder.append("      <IconStyle>\n")
+        kmlBuilder.append("        <color>ff0000ff</color>\n") // Red
+        kmlBuilder.append("        <scale>1.2</scale>\n")
+        kmlBuilder.append("      </IconStyle>\n")
+        kmlBuilder.append("    </Style>\n")
+        
+        kmlBuilder.append("    <Style id=\"trusted_marker\">\n")
+        kmlBuilder.append("      <IconStyle>\n")
+        kmlBuilder.append("        <color>ff00ff00</color>\n") // Green
+        kmlBuilder.append("        <scale>1.0</scale>\n")
+        kmlBuilder.append("      </IconStyle>\n")
+        kmlBuilder.append("    </Style>\n")
+
+        kmlBuilder.append("    <Style id=\"generic_marker\">\n")
+        kmlBuilder.append("      <IconStyle>\n")
+        kmlBuilder.append("        <color>ffff0000</color>\n") // Blue/Indigo
+        kmlBuilder.append("        <scale>1.0</scale>\n")
+        kmlBuilder.append("      </IconStyle>\n")
+        kmlBuilder.append("    </Style>\n")
+
+        mappedDevices.forEach { dev ->
+            val styleId = when {
+                dev.isSafe -> "trusted_marker"
+                dev.isSuspicious -> "suspicious_marker"
+                else -> "generic_marker"
+            }
+            val name = dev.name ?: dev.address
+            val description = "MAC: ${dev.address}\n" +
+                              "Manufacturer: ${dev.manufacturerName}\n" +
+                              "RSSI: ${dev.rssi} dBm\n" +
+                              "Times Seen: ${dev.scanCount}\n" +
+                              "Estimated Distance: ~${dev.estimatedDistanceMeters}m"
+            
+            kmlBuilder.append("    <Placemark>\n")
+            kmlBuilder.append("      <name>${name.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")}</name>\n")
+            kmlBuilder.append("      <description><![CDATA[${description}]]></description>\n")
+            kmlBuilder.append("      <styleUrl>#${styleId}</styleUrl>\n")
+            kmlBuilder.append("      <Point>\n")
+            kmlBuilder.append("        <coordinates>${dev.longitude},${dev.latitude},0</coordinates>\n")
+            kmlBuilder.append("      </Point>\n")
+            kmlBuilder.append("    </Placemark>\n")
+        }
+
+        kmlBuilder.append("  </Document>\n")
+        kmlBuilder.append("</kml>\n")
+
+        val kmlData = kmlBuilder.toString()
+        val filename = "wifiguard_ble_scan_${System.currentTimeMillis()}.kml"
+        val file = File(context.getExternalFilesDir(null), filename)
+
+        try {
+            file.writeText(kmlData)
+            val fileUri = FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.fileprovider",
+                file
+            )
+
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = "application/vnd.google-earth.kml+xml"
+                putExtra(Intent.EXTRA_STREAM, fileUri)
+                putExtra(Intent.EXTRA_SUBJECT, "WifiGuard BLE Google Earth KML log")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            context.startActivity(Intent.createChooser(intent, "Upload KML to Google Drive"))
+        } catch (e: Exception) {
+            Toast.makeText(context, "Failed to write KML log: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
         }
     }
 

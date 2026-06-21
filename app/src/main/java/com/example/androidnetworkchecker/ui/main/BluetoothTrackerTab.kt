@@ -130,7 +130,7 @@ fun BluetoothTrackerTab(viewModel: BluetoothTrackerViewModel) {
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Export to GDrive/Wigle Button
+                // Export to GDrive/Wigle Button (CSV)
                 IconButton(
                     onClick = { viewModel.exportToWigleCsv(context) },
                     modifier = Modifier
@@ -141,6 +141,21 @@ fun BluetoothTrackerTab(viewModel: BluetoothTrackerViewModel) {
                         imageVector = Icons.Default.Share,
                         contentDescription = "Export Wigle CSV",
                         tint = Teal500,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+
+                // Export to Google Earth Button (KML)
+                IconButton(
+                    onClick = { viewModel.exportToKml(context) },
+                    modifier = Modifier
+                        .background(Slate800, CircleShape)
+                        .size(36.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.LocationOn,
+                        contentDescription = "Export Google Earth KML",
+                        tint = Indigo500,
                         modifier = Modifier.size(18.dp)
                     )
                 }
@@ -303,6 +318,8 @@ fun MapViewContainer(viewModel: BluetoothTrackerViewModel, modifier: Modifier = 
                 settings.javaScriptEnabled = true
                 settings.domStorageEnabled = true
                 settings.allowFileAccess = true
+                settings.allowFileAccessFromFileURLs = true
+                settings.allowUniversalAccessFromFileURLs = true
                 
                 // Add native Javascript Bridge Interface to access map json
                 addJavascriptInterface(object {
