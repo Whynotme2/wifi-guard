@@ -35,6 +35,15 @@ class SpyScannerViewModel(context: Context) : ViewModel(), SensorEventListener {
     // Active color filter matrix index
     val activeColorFilterIndex = MutableStateFlow(0) // 0 = Negative Thermal, 1 = Night Vision, 2 = UV, 3 = High Contrast
 
+    // AI Object Detection State
+    val aiDetectedObject = MutableStateFlow("")
+    val aiConfidence = MutableStateFlow(0f)
+
+    fun updateAiObject(label: String, confidence: Float) {
+        aiDetectedObject.value = label
+        aiConfidence.value = confidence
+    }
+
     // --- EMF Magnetometer Section ---
     fun startEmfScanning() {
         magnetometer?.let {

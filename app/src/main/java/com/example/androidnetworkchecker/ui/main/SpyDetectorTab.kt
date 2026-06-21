@@ -55,6 +55,7 @@ import androidx.core.content.ContextCompat
 import com.example.androidnetworkchecker.data.EmfScannerState
 import com.example.androidnetworkchecker.data.SpyMode
 import com.example.androidnetworkchecker.data.SpyScannerState
+import com.example.androidnetworkchecker.data.TFLiteObjectDetector
 import kotlinx.coroutines.delay
 import kotlin.math.cos
 import kotlin.math.sin
@@ -75,7 +76,7 @@ private val Amber500 = Color(0xFFF59E0B)
 fun SpyDetectorTab(viewModel: SpyScannerViewModel, bluetoothViewModel: BluetoothTrackerViewModel) {
     val emfState by viewModel.emfState.collectAsState()
     val spyState by viewModel.spyState.collectAsState()
-    var activeSubTab by rememberSaveable { mutableStateOf(0) } // 0 = Wall EMF, 1 = Optics & IR, 2 = Bluetooth Tracker
+    var activeSubTab by rememberSaveable { mutableStateOf(0) } // 0 = Wall EMF, 1 = Optics & IR, 2 = AI Object Scan, 3 = BT Tracker
 
     DisposableEffect(Unit) {
         viewModel.startEmfScanning()
@@ -99,17 +100,22 @@ fun SpyDetectorTab(viewModel: SpyScannerViewModel, bluetoothViewModel: Bluetooth
             Tab(
                 selected = activeSubTab == 0,
                 onClick = { activeSubTab = 0 },
-                text = { Text("Wall EMF Scanner", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = if (activeSubTab == 0) Teal500 else Slate400) }
+                text = { Text("Wall EMF Scanner", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = if (activeSubTab == 0) Teal500 else Slate400) }
             )
             Tab(
                 selected = activeSubTab == 1,
                 onClick = { activeSubTab = 1 },
-                text = { Text("Optics & IR Finder", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = if (activeSubTab == 1) Teal500 else Slate400) }
+                text = { Text("Optics & IR Finder", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = if (activeSubTab == 1) Teal500 else Slate400) }
             )
             Tab(
                 selected = activeSubTab == 2,
                 onClick = { activeSubTab = 2 },
-                text = { Text("BT Tracker", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = if (activeSubTab == 2) Teal500 else Slate400) }
+                text = { Text("AI Object Scanner", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = if (activeSubTab == 2) Teal500 else Slate400) }
+            )
+            Tab(
+                selected = activeSubTab == 3,
+                onClick = { activeSubTab = 3 },
+                text = { Text("BT Tracker", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = if (activeSubTab == 3) Teal500 else Slate400) }
             )
         }
 
@@ -122,7 +128,8 @@ fun SpyDetectorTab(viewModel: SpyScannerViewModel, bluetoothViewModel: Bluetooth
             when (activeSubTab) {
                 0 -> Box(modifier = Modifier.padding(horizontal = 16.dp)) { WallEmfScannerView(emfState = emfState, viewModel = viewModel) }
                 1 -> Box(modifier = Modifier.padding(horizontal = 16.dp)) { OpticsCamView(spyState = spyState, viewModel = viewModel) }
-                2 -> BluetoothTrackerTab(viewModel = bluetoothViewModel)
+                2 -> Box(modifier = Modifier.padding(horizontal = 16.dp)) { AiObjectDetectionView(viewModel = viewModel) }
+                3 -> BluetoothTrackerTab(viewModel = bluetoothViewModel)
             }
         }
     }
@@ -920,6 +927,8 @@ fun CameraPreview3(
     zoomLevel: Float = 1.0f,
     isRecording: Boolean = false,
     onGlintDetected: (Float, Float) -> Unit,
+    detector: TFLiteObjectDetector? = null,
+    onObjectDetected: ((String, Float) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -1018,6 +1027,7 @@ fun CameraPreview3(
                         surfaceTexture.setDefaultBufferSize(previewWidth, previewHeight)
 
                         // Set up ImageReader for background glint analysis
+                        var lastInferenceTime = 0L
                         val history = java.util.ArrayDeque<List<Peak>>()
                         val reader = ImageReader.newInstance(readerWidth, readerHeight, ImageFormat.YUV_420_888, 2)
                         imageReader = reader
@@ -1025,6 +1035,15 @@ fun CameraPreview3(
                             try {
                                 val image = r.acquireLatestImage() ?: return@setOnImageAvailableListener
                                 try {
+                                    val nowTime = System.currentTimeMillis()
+                                    if (detector != null && onObjectDetected != null && nowTime - lastInferenceTime >= 350) {
+                                        lastInferenceTime = nowTime
+                                        val result = detector.classifyFrame(image)
+                                        if (result != null) {
+                                            onObjectDetected(result.first, result.second)
+                                        }
+                                    }
+
                                     val planes = image.planes
                                     val yPlane = planes[0]
                                     val buffer = yPlane.buffer
@@ -1422,5 +1441,220 @@ private fun exportVideoToGallery(context: Context, file: File) {
     } catch (e: Exception) {
         FileLogger.log(context, "CameraPreview", "Failed to export video to MediaStore: ${e.message}")
         e.printStackTrace()
+    }
+}
+
+@Composable
+fun AiObjectDetectionView(viewModel: SpyScannerViewModel) {
+    val context = LocalContext.current
+    val spyState by viewModel.spyState.collectAsState()
+    val aiDetectedObject by viewModel.aiDetectedObject.collectAsState()
+    val aiConfidence by viewModel.aiConfidence.collectAsState()
+
+    var hasCameraPermission by rememberSaveable {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+        )
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+        onResult = { isGranted ->
+            hasCameraPermission = isGranted
+            if (!isGranted) {
+                Toast.makeText(context, "Camera permission is required for AI Object Scanner.", Toast.LENGTH_LONG).show()
+            }
+        }
+    )
+
+    LaunchedEffect(Unit) {
+        if (!hasCameraPermission) {
+            permissionLauncher.launch(Manifest.permission.CAMERA)
+        }
+        viewModel.setSpyMode(SpyMode.AI_OBJECT)
+    }
+
+    val detector = remember { TFLiteObjectDetector(context) }
+    DisposableEffect(Unit) {
+        onDispose {
+            detector.close()
+            viewModel.updateAiObject("", 0f)
+            viewModel.setSpyMode(SpyMode.OFF)
+        }
+    }
+
+    var zoomLevel by rememberSaveable { mutableStateOf(1.0f) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Slate900),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        Text(
+            text = "AI-Powered Camera Object Detection",
+            color = Slate50,
+            fontSize = 18.sp,
+            fontWeight = FontWeight.Bold
+        )
+
+        Text(
+            text = "Identifies objects (like clocks, wall sockets, smoke detectors, pens, and laptops) that are commonly used as concealment platforms for hidden pinhole cameras.",
+            color = Slate400,
+            fontSize = 12.sp,
+            lineHeight = 16.sp
+        )
+
+        if (hasCameraPermission) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .clip(RoundedCornerShape(12.dp))
+                    .border(1.dp, Slate700, RoundedCornerShape(12.dp))
+                    .background(Color.Black)
+            ) {
+                CameraPreview3(
+                    cameraId = spyState.selectedCameraId,
+                    colorMatrix = null,
+                    isStrobeActive = false,
+                    zoomLevel = zoomLevel,
+                    isRecording = false,
+                    onGlintDetected = { _, _ -> },
+                    detector = detector,
+                    onObjectDetected = { label, confidence ->
+                        viewModel.updateAiObject(label, confidence)
+                    },
+                    modifier = Modifier.fillMaxSize()
+                )
+
+                // Switch Camera Button
+                IconButton(
+                    onClick = { viewModel.toggleCamera() },
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(top = 16.dp, end = 16.dp)
+                        .background(Color.Black.copy(alpha = 0.6f), CircleShape)
+                        .size(36.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Refresh,
+                        contentDescription = "Switch Camera",
+                        tint = Slate50,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+
+                // AI Detection Label overlay at the bottom
+                if (aiDetectedObject.isNotEmpty()) {
+                    val lowerLabel = aiDetectedObject.lowercase()
+                    val isSuspicious = lowerLabel.contains("socket") || 
+                                       lowerLabel.contains("plug") ||
+                                       lowerLabel.contains("clock") ||
+                                       lowerLabel.contains("watch") ||
+                                       lowerLabel.contains("detector") ||
+                                       lowerLabel.contains("alarm") ||
+                                       lowerLabel.contains("pen") ||
+                                       lowerLabel.contains("camera") ||
+                                       lowerLabel.contains("microphone") ||
+                                       lowerLabel.contains("phone") ||
+                                       lowerLabel.contains("television") ||
+                                       lowerLabel.contains("keyboard") ||
+                                       lowerLabel.contains("laptop")
+
+                    val cleanLabel = aiDetectedObject.split(",").firstOrNull()?.trim() ?: aiDetectedObject
+
+                    Column(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth()
+                            .background(Color.Black.copy(alpha = 0.7f))
+                            .padding(12.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            text = "Detected: ${cleanLabel.uppercase()}",
+                            color = Slate50,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp
+                        )
+                        Text(
+                            text = String.format(java.util.Locale.US, "Model Confidence: %.1f%%", aiConfidence * 100),
+                            color = Slate400,
+                            fontSize = 11.sp
+                        )
+                        if (isSuspicious) {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = when {
+                                    lowerLabel.contains("socket") || lowerLabel.contains("plug") -> 
+                                        "WARNING: Wall socket USB chargers are common hidden spy camera platforms."
+                                    lowerLabel.contains("clock") || lowerLabel.contains("watch") -> 
+                                        "WARNING: Digital clocks are frequently hollowed out to embed hidden lens elements."
+                                    lowerLabel.contains("detector") || lowerLabel.contains("alarm") -> 
+                                        "WARNING: Smoke alarms or wall detectors can easily hide pinhole camera lenses."
+                                    lowerLabel.contains("pen") -> 
+                                        "WARNING: Portable spy recording pens are common. Inspect carefully."
+                                    lowerLabel.contains("camera") -> 
+                                        "WARNING: Active Camera Lens detected directly on frame."
+                                    lowerLabel.contains("microphone") -> 
+                                        "WARNING: Audio recording microphone detected."
+                                    else -> 
+                                        "WARNING: Common concealment object found. Check surface for pinholes."
+                                },
+                                color = Red500,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    }
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth()
+                            .background(Color.Black.copy(alpha = 0.7f))
+                            .padding(12.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "Analyzing frame with local TFLite model...",
+                            color = Slate400,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
+        } else {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = Slate800),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 16.dp)
+                    .border(1.dp, Slate700, RoundedCornerShape(12.dp)),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(
+                        text = "Camera Permission Required",
+                        color = Slate50,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp
+                    )
+                    Button(
+                        onClick = { permissionLauncher.launch(Manifest.permission.CAMERA) },
+                        colors = ButtonDefaults.buttonColors(containerColor = Teal500)
+                    ) {
+                        Text("Grant Permission", fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
     }
 }

@@ -933,4 +933,29 @@ object NetworkManager {
             connection?.disconnect()
         }
     }
+
+    fun getDnsServers(context: Context): List<String> {
+        val servers = mutableListOf<String>()
+        try {
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val activeNetwork = cm.activeNetwork
+            if (activeNetwork != null) {
+                val linkProperties = cm.getLinkProperties(activeNetwork)
+                if (linkProperties != null) {
+                    for (dns in linkProperties.dnsServers) {
+                        val host = dns.hostAddress
+                        if (host != null) {
+                            servers.add(host)
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        if (servers.isEmpty()) {
+            servers.add("8.8.8.8")
+        }
+        return servers
+    }
 }

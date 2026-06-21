@@ -2752,12 +2752,17 @@ fun ToolsTab(state: NetworkState, viewModel: MainScreenViewModel, context: andro
             Tab(
                 selected = subTab == 0,
                 onClick = { subTab = 0 },
-                text = { Text("DNS Speed Bench", color = if (subTab == 0) Teal500 else Slate400, fontWeight = FontWeight.Bold, fontSize = 13.sp) }
+                text = { Text("DNS Speed Bench", color = if (subTab == 0) Teal500 else Slate400, fontWeight = FontWeight.Bold, fontSize = 11.sp) }
             )
             Tab(
                 selected = subTab == 1,
                 onClick = { subTab = 1 },
-                text = { Text("IP Geo & WHOIS", color = if (subTab == 1) Teal500 else Slate400, fontWeight = FontWeight.Bold, fontSize = 13.sp) }
+                text = { Text("IP Geo & WHOIS", color = if (subTab == 1) Teal500 else Slate400, fontWeight = FontWeight.Bold, fontSize = 11.sp) }
+            )
+            Tab(
+                selected = subTab == 2,
+                onClick = { subTab = 2 },
+                text = { Text("Vulnerability Audit", color = if (subTab == 2) Teal500 else Slate400, fontWeight = FontWeight.Bold, fontSize = 11.sp) }
             )
         }
         
@@ -2767,7 +2772,299 @@ fun ToolsTab(state: NetworkState, viewModel: MainScreenViewModel, context: andro
             when (subTab) {
                 0 -> DnsBenchmarkTab(state = state, viewModel = viewModel)
                 1 -> GeoLocateTab(state = state, viewModel = viewModel, context = context)
+                2 -> VulnerabilityAuditTab(state = state, viewModel = viewModel, context = context)
             }
+        }
+    }
+}
+
+@Composable
+fun VulnerabilityAuditTab(state: NetworkState, viewModel: MainScreenViewModel, context: android.content.Context) {
+    val vulnerabilityState = state.vulnerabilityState
+    val report = vulnerabilityState.report
+    
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+        contentPadding = PaddingValues(bottom = 24.dp)
+    ) {
+        item {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, Slate700, RoundedCornerShape(16.dp)),
+                colors = CardDefaults.cardColors(containerColor = Slate800),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("Network Vulnerability Audit", color = Slate50, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                    Text(
+                        "Performs a comprehensive diagnostic audit of Wi-Fi encryption, default gateway ports (SSH, Telnet, HTTP, RDP, etc.), and checks for active DNS leaks.",
+                        color = Slate400,
+                        fontSize = 12.sp
+                    )
+                    
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Button(
+                            onClick = { viewModel.startVulnerabilityAudit(context) },
+                            enabled = !vulnerabilityState.isAuditing,
+                            colors = ButtonDefaults.buttonColors(containerColor = Teal500),
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Text(if (vulnerabilityState.isAuditing) "Auditing..." else "Start Diagnostic Scan", fontWeight = FontWeight.Bold)
+                        }
+                        
+                        if (report != null) {
+                            Button(
+                                onClick = { viewModel.clearVulnerabilityReport() },
+                                colors = ButtonDefaults.buttonColors(containerColor = Slate700),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text("Reset", color = Slate50, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        if (vulnerabilityState.isAuditing) {
+            item {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(1.dp, Slate700, RoundedCornerShape(16.dp)),
+                    colors = CardDefaults.cardColors(containerColor = Slate800),
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(24.dp).fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        CircularProgressIndicator(color = Teal500)
+                        Text("Auditing network security controls...", color = Slate50, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        Text("Testing default gateway open ports & DNS leak status...", color = Slate400, fontSize = 11.sp)
+                    }
+                }
+            }
+        }
+        
+        if (vulnerabilityState.errorMessage != null) {
+            item {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(1.dp, Red500.copy(alpha = 0.5f), RoundedCornerShape(16.dp)),
+                    colors = CardDefaults.cardColors(containerColor = Slate800),
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Text(
+                        text = vulnerabilityState.errorMessage,
+                        color = Red500,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(16.dp)
+                    )
+                }
+            }
+        }
+        
+        if (report != null) {
+            item {
+                // Threat rating card
+                val ratingColor = when (report.riskRating) {
+                    "Safe" -> Emerald500
+                    "Low Risk", "Medium Risk" -> Amber500
+                    else -> Red500
+                }
+                
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(1.dp, Slate700, RoundedCornerShape(16.dp)),
+                    colors = CardDefaults.cardColors(containerColor = Slate800),
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column {
+                                Text("THREAT RISK LEVEL", color = Slate400, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                Text(report.riskRating.uppercase(), color = ratingColor, fontSize = 22.sp, fontWeight = FontWeight.Black)
+                            }
+                            
+                            Box(
+                                modifier = Modifier
+                                    .size(54.dp)
+                                    .background(ratingColor.copy(alpha = 0.15f), CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = "${report.riskScore}",
+                                    color = ratingColor,
+                                    fontSize = 18.sp,
+                                    fontWeight = FontWeight.Black
+                                )
+                            }
+                        }
+                        
+                        // Linear visual gauge indicator
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(8.dp)
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(Slate700)
+                        ) {
+                            Row(modifier = Modifier.fillMaxSize()) {
+                                Box(modifier = Modifier.weight(0.15f).fillMaxHeight().background(Emerald500))
+                                Box(modifier = Modifier.weight(0.45f).fillMaxHeight().background(Amber500))
+                                Box(modifier = Modifier.weight(0.40f).fillMaxHeight().background(Red500))
+                            }
+                            
+                            // Pointer tick for risk score
+                            val pointerWeight = report.riskScore / 100f
+                            Row(modifier = Modifier.fillMaxSize()) {
+                                if (pointerWeight > 0.02f) {
+                                    Spacer(modifier = Modifier.weight(pointerWeight))
+                                }
+                                Box(
+                                    modifier = Modifier
+                                        .width(4.dp)
+                                        .fillMaxHeight()
+                                        .background(Slate50)
+                                )
+                                if (1f - pointerWeight > 0.02f) {
+                                    Spacer(modifier = Modifier.weight(1f - pointerWeight))
+                                }
+                            }
+                        }
+                        
+                        Text(
+                            text = "Score of 0 is ideal. Higher values indicate multiple active security vulnerabilities.",
+                            color = Slate400,
+                            fontSize = 10.sp
+                        )
+                    }
+                }
+            }
+            
+            item {
+                // Checklist details card
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(1.dp, Slate700, RoundedCornerShape(16.dp)),
+                    colors = CardDefaults.cardColors(containerColor = Slate800),
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                        Text("DIAGNOSTIC CHECKS", color = Slate50, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                        
+                        ChecklistRow(
+                            title = "Wi-Fi Encryption",
+                            detail = if (report.isEncrypted) "Encrypted (${report.securityType})" else "Open (No Encryption)",
+                            isPass = report.isEncrypted
+                        )
+                        
+                        ChecklistRow(
+                            title = "Gateway Exposure",
+                            detail = if (report.openPortsCount == 0) "No exposed admin ports" else "Exposed ports: ${report.openPortsList.joinToString(", ")}",
+                            isPass = report.openPortsCount == 0
+                        )
+                        
+                        ChecklistRow(
+                            title = "DNS Leak Status",
+                            detail = if (!report.dnsLeakDetected) "No leak detected" else "Active leak - requests bypassing VPN",
+                            isPass = !report.dnsLeakDetected
+                        )
+                        
+                        ChecklistRow(
+                            title = "DNS Server Redundancy",
+                            detail = "${report.dnsServersCount} DNS servers configured",
+                            isPass = report.dnsServersCount > 1
+                        )
+                    }
+                }
+            }
+            
+            item {
+                // Recommendations card
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(1.dp, Slate700, RoundedCornerShape(16.dp)),
+                    colors = CardDefaults.cardColors(containerColor = Slate800),
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text("ACTION RECTIFICATION DETAILS", color = Slate50, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                        
+                        report.recommendations.forEach { recommendation ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.Top
+                            ) {
+                                Text("•", color = Teal500, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                                Text(
+                                    text = recommendation,
+                                    color = Slate400,
+                                    fontSize = 11.sp,
+                                    lineHeight = 15.sp
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            
+            item {
+                Button(
+                    onClick = { viewModel.exportVulnerabilityReportToPdf(context) },
+                    colors = ButtonDefaults.buttonColors(containerColor = Indigo500),
+                    modifier = Modifier.fillMaxWidth().height(50.dp),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text("Export & Share PDF Report", fontWeight = FontWeight.Bold, color = Slate50)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun ChecklistRow(title: String, detail: String, isPass: Boolean) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, color = Slate50, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            Text(detail, color = Slate400, fontSize = 11.sp)
+        }
+        
+        Box(
+            modifier = Modifier
+                .size(24.dp)
+                .background(if (isPass) Emerald500.copy(alpha = 0.15f) else Red500.copy(alpha = 0.15f), CircleShape),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = if (isPass) "✓" else "✗",
+                color = if (isPass) Emerald500 else Red500,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold
+            )
         }
     }
 }

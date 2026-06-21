@@ -221,6 +221,26 @@ data class GeoLocateState(
     val errorMessage: String? = null
 )
 
+data class VulnerabilityReport(
+    val ssid: String,
+    val securityType: String,
+    val isEncrypted: Boolean,
+    val openPortsCount: Int,
+    val openPortsList: List<Int>,
+    val dnsLeakDetected: Boolean,
+    val dnsServersCount: Int,
+    val riskScore: Int,
+    val riskRating: String,
+    val recommendations: List<String>,
+    val timestamp: Long
+)
+
+data class VulnerabilityState(
+    val isAuditing: Boolean = false,
+    val report: VulnerabilityReport? = null,
+    val errorMessage: String? = null
+)
+
 data class NetworkState(
     val interfaces: List<NetworkInterfaceInfo> = emptyList(),
     val activeConnection: ActiveConnectionInfo = ActiveConnectionInfo(ConnectionType.NONE, null, emptyList()),
@@ -235,7 +255,8 @@ data class NetworkState(
     val guardState: GuardState = GuardState(),
     val wifiSignalState: WifiSignalState = WifiSignalState(),
     val dnsBenchmarkState: DnsBenchmarkState = DnsBenchmarkState(),
-    val geoLocateState: GeoLocateState = GeoLocateState()
+    val geoLocateState: GeoLocateState = GeoLocateState(),
+    val vulnerabilityState: VulnerabilityState = VulnerabilityState()
 )
 
 // Physical security scanner models
@@ -247,7 +268,7 @@ data class EmfScannerState(
     val isAlertActive: Boolean = false
 )
 
-enum class SpyMode { GLINT_STROBE, IR_THERMAL, OFF }
+enum class SpyMode { GLINT_STROBE, IR_THERMAL, AI_OBJECT, OFF }
 
 data class SpyScannerState(
     val mode: SpyMode = SpyMode.OFF,

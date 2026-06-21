@@ -47,6 +47,10 @@ android {
         excludes += "/META-INF/{AL2.0,LGPL2.1}"
       }
     }
+    
+    aaptOptions {
+        noCompress("tflite")
+    }
 }
 
 kotlin {
@@ -57,6 +61,9 @@ dependencies {
   val composeBom = platform(libs.androidx.compose.bom)
   implementation(composeBom)
   androidTestImplementation(composeBom)
+
+  // TensorFlow Lite
+  implementation("org.tensorflow:tensorflow-lite:2.14.0")
 
   // Core Android dependencies
   implementation(libs.androidx.core.ktx)

@@ -1,6 +1,8 @@
 package com.example.androidnetworkchecker.data
 
 import android.content.Context
+import android.net.wifi.WifiManager
+import android.net.ConnectivityManager
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -20,6 +22,8 @@ interface DataRepository {
     suspend fun fetchPublicIpOverview()
     suspend fun performDnsLeakTest(progressCallback: (String) -> Unit): Result<DnsLeakTestResult>
     fun clearDnsLeakTestResult()
+    suspend fun performVulnerabilityAudit(context: Context)
+    fun clearVulnerabilityReport()
     
     // Subnet Scanner APIs
     suspend fun startSubnetScan(context: Context, interfaceName: String, localIp: String, prefixLength: Int)
@@ -177,6 +181,162 @@ class DefaultDataRepository : DataRepository {
             it.copy(
                 dnsLeakTestResult = null,
                 dnsTestProgress = null
+            )
+        }
+    }
+
+    override suspend fun performVulnerabilityAudit(context: Context) {
+        _networkState.update {
+            it.copy(
+                vulnerabilityState = VulnerabilityState(
+                    isAuditing = true,
+                    report = null,
+                    errorMessage = null
+                )
+            )
+        }
+
+        try {
+            val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            
+            val wifiSignal = _networkState.value.wifiSignalState
+            val ssid = if (wifiSignal.isConnected) wifiSignal.ssid else "Cellular / VPN Network"
+            
+            var securityType = "WPA2/WPA3 (Encrypted)"
+            var isEncrypted = true
+            
+            if (wifiSignal.isConnected) {
+                val lowerSsid = ssid.lowercase()
+                if (lowerSsid.contains("free") || lowerSsid.contains("public") || lowerSsid.contains("guest") || lowerSsid.contains("open")) {
+                    securityType = "None (Open Network)"
+                    isEncrypted = false
+                }
+            } else {
+                securityType = "Mobile Cellular Connection"
+                isEncrypted = true
+            }
+
+            val dhcpInfo = wifiManager?.dhcpInfo
+            val gatewayIp = if (dhcpInfo != null && dhcpInfo.gateway != 0) {
+                val ip = dhcpInfo.gateway
+                String.format(java.util.Locale.US, "%d.%d.%d.%d",
+                    ip and 0xff,
+                    ip shr 8 and 0xff,
+                    ip shr 16 and 0xff,
+                    ip shr 24 and 0xff
+                )
+            } else {
+                "192.168.1.1"
+            }
+
+            val portsToScan = listOf(21, 22, 23, 80, 443, 3389, 8080, 8443)
+            val openPorts = mutableListOf<Int>()
+            
+            coroutineScope {
+                portsToScan.map { port ->
+                    launch(Dispatchers.IO) {
+                        try {
+                            val socket = java.net.Socket()
+                            socket.connect(java.net.InetSocketAddress(gatewayIp, port), 250)
+                            socket.close()
+                            synchronized(openPorts) {
+                                openPorts.add(port)
+                            }
+                        } catch (e: Exception) {
+                            // Port closed
+                        }
+                    }
+                }.joinAll()
+            }
+
+            val dnsServers = NetworkManager.getDnsServers(context)
+            val dnsServersCount = dnsServers.size
+            val dnsLeakDetected = _networkState.value.dnsLeakTestResult?.conclusion?.lowercase()?.contains("leak") ?: false
+
+            var score = 10
+            val recommendations = mutableListOf<String>()
+
+            if (!isEncrypted) {
+                score += 40
+                recommendations.add("WARNING: Unencrypted public Wi-Fi. Traffic can be intercepted. Use a trusted VPN.")
+            }
+            if (openPorts.contains(23)) {
+                score += 20
+                recommendations.add("CRITICAL: Telnet (Port 23) is open on your router. Telnet is highly insecure and sends passwords in plain text.")
+            }
+            if (openPorts.contains(80)) {
+                score += 15
+                recommendations.add("WARNING: Router web admin panel is exposed via unencrypted HTTP (Port 80). Configure router to use HTTPS instead.")
+            }
+            if (openPorts.contains(21)) {
+                score += 10
+                recommendations.add("WARNING: FTP server (Port 21) is open on router. Use SFTP or FTPS for secure file sharing.")
+            }
+            if (openPorts.contains(22) || openPorts.contains(3389)) {
+                score += 5
+                recommendations.add("INFO: Remote login administration port (SSH/RDP) is open. Ensure strong credentials are used.")
+            }
+            if (dnsLeakDetected) {
+                score += 15
+                recommendations.add("WARNING: DNS Leak detected! Your DNS requests are bypassing VPN tunnel. Update DNS servers or use Private DNS.")
+            }
+            if (dnsServersCount == 1) {
+                score += 5
+                recommendations.add("INFO: Single DNS server configured. Add a secondary DNS server (e.g. 1.1.1.1 or 8.8.8.8) for redundancy.")
+            }
+
+            score = score.coerceIn(0, 100)
+            val riskRating = when {
+                score <= 15 -> "Safe"
+                score <= 35 -> "Low Risk"
+                score <= 60 -> "Medium Risk"
+                else -> "High Risk"
+            }
+
+            if (recommendations.isEmpty()) {
+                recommendations.add("No network security risks detected. Safe browsing habits are recommended.")
+            }
+
+            val report = VulnerabilityReport(
+                ssid = ssid,
+                securityType = securityType,
+                isEncrypted = isEncrypted,
+                openPortsCount = openPorts.size,
+                openPortsList = openPorts.toList(),
+                dnsLeakDetected = dnsLeakDetected,
+                dnsServersCount = dnsServersCount,
+                riskScore = score,
+                riskRating = riskRating,
+                recommendations = recommendations,
+                timestamp = System.currentTimeMillis()
+            )
+
+            _networkState.update {
+                it.copy(
+                    vulnerabilityState = VulnerabilityState(
+                        isAuditing = false,
+                        report = report,
+                        errorMessage = null
+                    )
+                )
+            }
+        } catch (e: Exception) {
+            _networkState.update {
+                it.copy(
+                    vulnerabilityState = VulnerabilityState(
+                        isAuditing = false,
+                        report = null,
+                        errorMessage = "Audit failed: ${e.localizedMessage}"
+                    )
+                )
+            }
+        }
+    }
+
+    override fun clearVulnerabilityReport() {
+        _networkState.update {
+            it.copy(
+                vulnerabilityState = VulnerabilityState()
             )
         }
     }
