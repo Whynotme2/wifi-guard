@@ -34,7 +34,7 @@ class TFLiteObjectDetector(private val context: Context) {
 
     fun getLabels(): List<String> = labels
 
-    fun classifyFrame(image: android.media.Image): Pair<String, Float>? {
+    fun classifyFrame(image: android.media.Image, rotationDegrees: Int): Pair<String, Float>? {
         val interp = interpreter ?: return null
         if (labels.isEmpty()) return null
 
@@ -43,8 +43,8 @@ class TFLiteObjectDetector(private val context: Context) {
         }
 
         try {
-            // Convert YUV to 224x224 RGB
-            convertYuvToByteBuffer(image, inputBuffer)
+            // Convert YUV to 224x224 RGB with rotation
+            convertYuvToByteBuffer(image, inputBuffer, rotationDegrees)
             inputBuffer.rewind()
 
             // Run inference (quantized outputs)
@@ -66,7 +66,9 @@ class TFLiteObjectDetector(private val context: Context) {
             if (maxIndex in labels.indices) {
                 val label = labels[maxIndex]
                 val confidence = maxVal / 255.0f
-                return Pair(label, confidence)
+                if (confidence >= 0.35f) {
+                    return Pair(label, confidence)
+                }
             }
         } catch (e: Exception) {
             e.printStackTrace()
@@ -79,8 +81,8 @@ class TFLiteObjectDetector(private val context: Context) {
         interpreter = null
     }
 
-    // High performance localized downsampling during YUV to RGB conversion
-    private fun convertYuvToByteBuffer(image: android.media.Image, byteBuffer: ByteBuffer) {
+    // High performance localized downsampling during YUV to RGB conversion with rotation alignment
+    private fun convertYuvToByteBuffer(image: android.media.Image, byteBuffer: ByteBuffer, rotationDegrees: Int) {
         byteBuffer.rewind()
         val w = image.width
         val h = image.height
@@ -96,18 +98,39 @@ class TFLiteObjectDetector(private val context: Context) {
         val uvStride = uPlane.rowStride
         val uvPixelStride = uPlane.pixelStride
         
-        val scaleX = w.toFloat() / 224f
-        val scaleY = h.toFloat() / 224f
+        val wMinus1 = (w - 1).toFloat()
+        val hMinus1 = (h - 1).toFloat()
         
         for (outY in 0 until 224) {
-            val srcY = (outY * scaleY).toInt().coerceIn(0, h - 1)
-            val yRow = srcY * yStride
-            val uvRow = (srcY shr 1) * uvStride
+            val v = outY.toFloat() / 223f
             for (outX in 0 until 224) {
-                val srcX = (outX * scaleX).toInt().coerceIn(0, w - 1)
-                val yIndex = yRow + srcX
-                val uIndex = uvRow + (srcX shr 1) * uvPixelStride
-                val vIndex = uvRow + (srcX shr 1) * uvPixelStride
+                val u = outX.toFloat() / 223f
+                
+                // Map output (u, v) coordinates back to source (srcX, srcY) depending on rotation degrees
+                val srcX: Int
+                val srcY: Int
+                when (rotationDegrees) {
+                    90 -> {
+                        srcX = (v * wMinus1).toInt().coerceIn(0, w - 1)
+                        srcY = ((1.0f - u) * hMinus1).toInt().coerceIn(0, h - 1)
+                    }
+                    180 -> {
+                        srcX = ((1.0f - u) * wMinus1).toInt().coerceIn(0, w - 1)
+                        srcY = ((1.0f - v) * hMinus1).toInt().coerceIn(0, h - 1)
+                    }
+                    270 -> {
+                        srcX = ((1.0f - v) * wMinus1).toInt().coerceIn(0, w - 1)
+                        srcY = (u * hMinus1).toInt().coerceIn(0, h - 1)
+                    }
+                    else -> { // 0 or standard landscape
+                        srcX = (u * wMinus1).toInt().coerceIn(0, w - 1)
+                        srcY = (v * hMinus1).toInt().coerceIn(0, h - 1)
+                    }
+                }
+                
+                val yIndex = srcY * yStride + srcX
+                val uIndex = (srcY shr 1) * uvStride + (srcX shr 1) * uvPixelStride
+                val vIndex = (srcY shr 1) * uvStride + (srcX shr 1) * uvPixelStride
                 
                 if (yIndex < yBuffer.remaining() && uIndex < uBuffer.remaining() && vIndex < vBuffer.remaining()) {
                     val yp = yBuffer.get(yIndex).toInt() and 0xFF

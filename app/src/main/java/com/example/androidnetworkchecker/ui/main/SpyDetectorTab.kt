@@ -3,6 +3,7 @@ package com.example.androidnetworkchecker.ui.main
 import java.io.File
 import android.Manifest
 import android.annotation.SuppressLint
+import android.os.Build
 import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.ColorMatrixColorFilter
@@ -542,9 +543,20 @@ fun OpticsCamView(spyState: SpyScannerState, viewModel: SpyScannerViewModel) {
         }
     )
 
-    var isFullScreen by rememberSaveable { mutableStateOf(false) }
+    var isFullScreen by rememberSaveable { mutableStateOf(true) }
     var zoomLevel by rememberSaveable { mutableStateOf(1.0f) }
     var isRecording by rememberSaveable { mutableStateOf(false) }
+
+    // Instantiate local TFLite detector in OpticsCamView for hybrid AI/CV lens finder
+    val detector = remember { TFLiteObjectDetector(context) }
+    var aiDetectedObject by remember { mutableStateOf("") }
+    var aiConfidence by remember { mutableStateOf(0f) }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            detector.close()
+        }
+    }
 
     // Color matrix definitions
     val negativeThermalMatrix = floatArrayOf(
@@ -596,6 +608,11 @@ fun OpticsCamView(spyState: SpyScannerState, viewModel: SpyScannerViewModel) {
                 isRecording = isRecording,
                 onGlintDetected = { x, y ->
                     viewModel.updateGlintCoordinates(x, y)
+                },
+                detector = detector,
+                onObjectDetected = { label, confidence ->
+                    aiDetectedObject = label
+                    aiConfidence = confidence
                 },
                 modifier = Modifier.fillMaxSize()
             )
@@ -736,6 +753,25 @@ fun OpticsCamView(spyState: SpyScannerState, viewModel: SpyScannerViewModel) {
                         color = Slate50,
                         fontWeight = FontWeight.Black,
                         fontSize = 10.sp
+                    )
+                }
+            }
+
+            // AI camera warning banner
+            if (aiDetectedObject.isNotEmpty()) {
+                val cleanLabel = aiDetectedObject.split(",").firstOrNull()?.trim() ?: aiDetectedObject
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 40.dp)
+                        .background(Red500.copy(alpha = 0.8f), RoundedCornerShape(8.dp))
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                ) {
+                    Text(
+                        text = "AI DETECTED: ${cleanLabel.uppercase()} (${(aiConfidence * 100).toInt()}%)",
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 11.sp
                     )
                 }
             }
@@ -945,6 +981,7 @@ fun CameraPreview3(
         val textureView = textureViewRef ?: return@LaunchedEffect
         var isCancelled = false
         var imageReader: ImageReader? = null
+        var isAiLensDetected = false
         val handlerThread = android.os.HandlerThread("CameraBackground").apply { start() }
         val backgroundHandler = android.os.Handler(handlerThread.looper)
         
@@ -1038,9 +1075,15 @@ fun CameraPreview3(
                                     val nowTime = System.currentTimeMillis()
                                     if (detector != null && onObjectDetected != null && nowTime - lastInferenceTime >= 350) {
                                         lastInferenceTime = nowTime
-                                        val result = detector.classifyFrame(image)
+                                        val rotDeg = getRotationDegrees(context, cameraId)
+                                        val result = detector.classifyFrame(image, rotDeg)
                                         if (result != null) {
+                                            val lowerLabel = result.first.lowercase()
+                                            isAiLensDetected = lowerLabel.contains("lens") || lowerLabel.contains("camera") || lowerLabel.contains("glass") || lowerLabel.contains("optic")
                                             onObjectDetected(result.first, result.second)
+                                        } else {
+                                            isAiLensDetected = false
+                                            onObjectDetected("", 0f)
                                         }
                                     }
 
@@ -1156,7 +1199,7 @@ fun CameraPreview3(
                                         history.removeFirst()
                                     }
 
-                                    if (isStrobeActive && bestGlint != null) {
+                                    if ((isStrobeActive || isAiLensDetected) && bestGlint != null) {
                                         currentOnGlintDetected(bestGlint.x.toFloat() / w, bestGlint.y.toFloat() / h)
                                     } else {
                                         currentOnGlintDetected(-1f, -1f)
@@ -1248,12 +1291,18 @@ fun CameraPreview3(
                 e.printStackTrace()
             }
         }
-
         val listener = object : TextureView.SurfaceTextureListener {
             override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
                 openCamera(st, w, h)
+                textureViewRef?.let { tv ->
+                    configureTransform(tv, w, h, previewWidth, previewHeight, context, cameraId)
+                }
             }
-            override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {}
+            override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {
+                textureViewRef?.let { tv ->
+                    configureTransform(tv, w, h, previewWidth, previewHeight, context, cameraId)
+                }
+            }
             override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean = true
             override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
         }
@@ -1264,9 +1313,9 @@ fun CameraPreview3(
             val st = textureView.surfaceTexture
             if (st != null) {
                 openCamera(st, textureView.width, textureView.height)
+                configureTransform(textureView, textureView.width, textureView.height, previewWidth, previewHeight, context, cameraId)
             }
         }
-
         // Cleanup coroutine block closes camera device gracefully on disposal
         try {
             kotlinx.coroutines.awaitCancellation()
@@ -1379,7 +1428,7 @@ fun CameraPreview3(
                     textureView.setLayerType(View.LAYER_TYPE_NONE, null)
                 }
             },
-            modifier = Modifier.aspectRatio(9f / 16f)
+            modifier = Modifier.fillMaxSize()
         )
     }
 }
@@ -1658,3 +1707,101 @@ fun AiObjectDetectionView(viewModel: SpyScannerViewModel) {
         }
     }
 }
+
+private fun configureTransform(
+    textureView: TextureView,
+    viewWidth: Int,
+    viewHeight: Int,
+    previewWidth: Int,
+    previewHeight: Int,
+    context: Context,
+    cameraId: String
+) {
+    if (viewWidth == 0 || viewHeight == 0 || previewWidth == 0 || previewHeight == 0) return
+    
+    val matrix = android.graphics.Matrix()
+    
+    // Get window/device display rotation
+    val display = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        try {
+            context.display
+        } catch (e: Exception) {
+            null
+        }
+    } else {
+        @Suppress("DEPRECATION")
+        val wm = context.getSystemService(Context.WINDOW_SERVICE) as android.view.WindowManager
+        wm.defaultDisplay
+    }
+    val deviceRotation = display?.rotation ?: Surface.ROTATION_0
+    
+    val viewRect = android.graphics.RectF(0f, 0f, viewWidth.toFloat(), viewHeight.toFloat())
+    val bufferRect = android.graphics.RectF(0f, 0f, previewHeight.toFloat(), previewWidth.toFloat())
+    val centerX = viewRect.centerX()
+    val centerY = viewRect.centerY()
+    
+    if (Surface.ROTATION_90 == deviceRotation || Surface.ROTATION_270 == deviceRotation) {
+        bufferRect.offset(centerX - bufferRect.centerX(), centerY - bufferRect.centerY())
+        matrix.setRectToRect(viewRect, bufferRect, android.graphics.Matrix.ScaleToFit.FILL)
+        
+        // Scale to fill the screen (center-crop)
+        val scale = Math.max(
+            viewHeight.toFloat() / previewHeight,
+            viewWidth.toFloat() / previewWidth
+        )
+        matrix.postScale(scale, scale, centerX, centerY)
+        
+        // Rotate to match display orientation
+        matrix.postRotate((90 * (deviceRotation - 2)).toFloat(), centerX, centerY)
+    } else {
+        // ROTATION_0 or ROTATION_180
+        val scaleX = viewWidth.toFloat() / previewHeight.toFloat()
+        val scaleY = viewHeight.toFloat() / previewWidth.toFloat()
+        val scale = Math.max(scaleX, scaleY)
+        
+        matrix.postScale(scale, scale, centerX, centerY)
+        
+        if (Surface.ROTATION_180 == deviceRotation) {
+            matrix.postRotate(180f, centerX, centerY)
+        }
+    }
+    
+    textureView.setTransform(matrix)
+}
+
+private fun getRotationDegrees(context: Context, cameraId: String): Int {
+    val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+    val characteristics = cameraManager.getCameraCharacteristics(cameraId)
+    val sensorOrientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
+    
+    // Get window/device display rotation
+    val display = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        try {
+            context.display
+        } catch (e: Exception) {
+            null
+        }
+    } else {
+        @Suppress("DEPRECATION")
+        val wm = context.getSystemService(Context.WINDOW_SERVICE) as android.view.WindowManager
+        wm.defaultDisplay
+    }
+    
+    val deviceRotation = display?.rotation ?: Surface.ROTATION_0
+    val degrees = when (deviceRotation) {
+        Surface.ROTATION_0 -> 0
+        Surface.ROTATION_90 -> 90
+        Surface.ROTATION_180 -> 180
+        Surface.ROTATION_270 -> 270
+        else -> 0
+    }
+    
+    val facing = characteristics.get(CameraCharacteristics.LENS_FACING)
+    return if (facing == CameraCharacteristics.LENS_FACING_FRONT) {
+        val sign = (sensorOrientation + degrees) % 360
+        (360 - sign) % 360
+    } else { // back-facing
+        (sensorOrientation - degrees + 360) % 360
+    }
+}
+

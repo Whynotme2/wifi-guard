@@ -272,6 +272,8 @@ fun BluetoothTrackerTab(viewModel: BluetoothTrackerViewModel) {
                     2 -> state.devices.filter { it.isSafe }
                     else -> state.devices
                 }
+                val onlineDevices = filteredDevices.filter { it.isCurrentlyActive }
+                val offlineDevices = filteredDevices.filter { !it.isCurrentlyActive }
 
                 if (filteredDevices.isEmpty()) {
                     Box(
@@ -299,8 +301,33 @@ fun BluetoothTrackerTab(viewModel: BluetoothTrackerViewModel) {
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                         contentPadding = PaddingValues(top = 8.dp, bottom = 24.dp)
                     ) {
-                        items(filteredDevices, key = { it.address }) { device ->
-                            DeviceCard(device = device, onToggleSafe = { viewModel.toggleSafeDevice(device.address) })
+                        if (onlineDevices.isNotEmpty()) {
+                            item {
+                                Text(
+                                    text = "Online Devices (${onlineDevices.size})",
+                                    color = Teal500,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(vertical = 4.dp)
+                                )
+                            }
+                            items(onlineDevices, key = { it.address }) { device ->
+                                DeviceCard(device = device, onToggleSafe = { viewModel.toggleSafeDevice(device.address) })
+                            }
+                        }
+                        if (offlineDevices.isNotEmpty()) {
+                            item {
+                                Text(
+                                    text = "Offline Devices (${offlineDevices.size})",
+                                    color = Slate400,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(top = 12.dp, bottom = 4.dp)
+                                )
+                            }
+                            items(offlineDevices, key = { it.address }) { device ->
+                                DeviceCard(device = device, onToggleSafe = { viewModel.toggleSafeDevice(device.address) })
+                            }
                         }
                     }
                 }

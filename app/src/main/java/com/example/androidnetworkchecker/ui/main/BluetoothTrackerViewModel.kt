@@ -362,9 +362,10 @@ class BluetoothTrackerViewModel(private val context: Context) : ViewModel() {
             }
         }
 
-        // Sort: Times Found (scanCount) Descending, then Distance Ascending
+        // Sort: Online first, then Times Found (scanCount) Descending, then Distance Ascending
         val sortedList = list.sortedWith(
-            compareByDescending<BluetoothTrackerDevice> { it.scanCount }
+            compareByDescending<BluetoothTrackerDevice> { it.isCurrentlyActive }
+                .thenByDescending { it.scanCount }
                 .thenBy { it.estimatedDistanceMeters }
         )
 
