@@ -72,10 +72,10 @@ private val Red500 = Color(0xFFEF4444)
 private val Amber500 = Color(0xFFF59E0B)
 
 @Composable
-fun SpyDetectorTab(viewModel: SpyScannerViewModel) {
+fun SpyDetectorTab(viewModel: SpyScannerViewModel, bluetoothViewModel: BluetoothTrackerViewModel) {
     val emfState by viewModel.emfState.collectAsState()
     val spyState by viewModel.spyState.collectAsState()
-    var activeSubTab by rememberSaveable { mutableStateOf(0) } // 0 = Wall EMF, 1 = Optics & IR
+    var activeSubTab by rememberSaveable { mutableStateOf(0) } // 0 = Wall EMF, 1 = Optics & IR, 2 = Bluetooth Tracker
 
     DisposableEffect(Unit) {
         viewModel.startEmfScanning()
@@ -99,12 +99,17 @@ fun SpyDetectorTab(viewModel: SpyScannerViewModel) {
             Tab(
                 selected = activeSubTab == 0,
                 onClick = { activeSubTab = 0 },
-                text = { Text("Wall EMF Scanner", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = if (activeSubTab == 0) Teal500 else Slate400) }
+                text = { Text("Wall EMF Scanner", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = if (activeSubTab == 0) Teal500 else Slate400) }
             )
             Tab(
                 selected = activeSubTab == 1,
                 onClick = { activeSubTab = 1 },
-                text = { Text("Optics & IR Finder", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = if (activeSubTab == 1) Teal500 else Slate400) }
+                text = { Text("Optics & IR Finder", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = if (activeSubTab == 1) Teal500 else Slate400) }
+            )
+            Tab(
+                selected = activeSubTab == 2,
+                onClick = { activeSubTab = 2 },
+                text = { Text("BT Tracker", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = if (activeSubTab == 2) Teal500 else Slate400) }
             )
         }
 
@@ -115,10 +120,10 @@ fun SpyDetectorTab(viewModel: SpyScannerViewModel) {
                 .weight(1f)
                 .padding(horizontal = 16.dp)
         ) {
-            if (activeSubTab == 0) {
-                WallEmfScannerView(emfState = emfState, viewModel = viewModel)
-            } else {
-                OpticsCamView(spyState = spyState, viewModel = viewModel)
+            when (activeSubTab) {
+                0 -> WallEmfScannerView(emfState = emfState, viewModel = viewModel)
+                1 -> OpticsCamView(spyState = spyState, viewModel = viewModel)
+                2 -> BluetoothTrackerTab(viewModel = bluetoothViewModel)
             }
         }
     }

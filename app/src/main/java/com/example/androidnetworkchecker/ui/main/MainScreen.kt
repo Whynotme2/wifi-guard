@@ -65,6 +65,7 @@ fun MainScreen(
     val context = LocalContext.current
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val spyViewModel: SpyScannerViewModel = viewModel { SpyScannerViewModel(context) }
+    val bluetoothTrackerViewModel: BluetoothTrackerViewModel = viewModel { BluetoothTrackerViewModel(context) }
 
     var selectedTab by rememberSaveable { mutableStateOf(0) }
     var activePortScanIp by rememberSaveable { mutableStateOf<String?>(null) }
@@ -200,7 +201,7 @@ fun MainScreen(
                 2 -> DiagnosticsTab(state = state, viewModel = viewModel)
                 3 -> ToolsTab(state = state, viewModel = viewModel, context = context)
                 4 -> GuardTab(state = state, viewModel = viewModel)
-                5 -> SpyDetectorTab(viewModel = spyViewModel)
+                5 -> SpyDetectorTab(viewModel = spyViewModel, bluetoothViewModel = bluetoothTrackerViewModel)
             }
 
             // Advanced Port Scanner Dialog Overlay
