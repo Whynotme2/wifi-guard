@@ -11,10 +11,16 @@ class TFLiteObjectDetector(private val context: Context) {
     private var interpreter: Interpreter? = null
     private val labels = mutableListOf<String>()
 
+    data class DetectedObject(
+        val label: String,
+        val confidence: Float,
+        val boundingBox: android.graphics.RectF // [left, top, right, bottom] (0..1)
+    )
+
     init {
         try {
-            // Load TFLite model from assets
-            val fileDescriptor = context.assets.openFd("mobilenet.tflite")
+            // Load SSD TFLite model from assets
+            val fileDescriptor = context.assets.openFd("ssd_mobilenet.tflite")
             val inputStream = FileInputStream(fileDescriptor.fileDescriptor)
             val fileChannel = inputStream.channel
             val startOffset = fileDescriptor.startOffset
@@ -23,8 +29,8 @@ class TFLiteObjectDetector(private val context: Context) {
             
             interpreter = Interpreter(modelBuffer)
             
-            // Load labels from assets
-            context.assets.open("labels.txt").bufferedReader().useLines { lines ->
+            // Load COCO labels from assets
+            context.assets.open("ssd_labels.txt").bufferedReader().useLines { lines ->
                 labels.addAll(lines)
             }
         } catch (e: Exception) {
@@ -34,46 +40,58 @@ class TFLiteObjectDetector(private val context: Context) {
 
     fun getLabels(): List<String> = labels
 
-    fun classifyFrame(image: android.media.Image, rotationDegrees: Int): Pair<String, Float>? {
-        val interp = interpreter ?: return null
-        if (labels.isEmpty()) return null
+    fun classifyFrame(image: android.media.Image, rotationDegrees: Int): List<DetectedObject> {
+        val interp = interpreter ?: return emptyList()
+        if (labels.isEmpty()) return emptyList()
 
-        val inputBuffer = ByteBuffer.allocateDirect(224 * 224 * 3).apply {
+        val inputBuffer = ByteBuffer.allocateDirect(300 * 300 * 3).apply {
             order(ByteOrder.nativeOrder())
         }
 
         try {
-            // Convert YUV to 224x224 RGB with rotation
+            // Convert YUV to 300x300 RGB with rotation
             convertYuvToByteBuffer(image, inputBuffer, rotationDegrees)
             inputBuffer.rewind()
 
-            // Run inference (quantized outputs)
-            val outputArray = Array(1) { ByteArray(labels.size) }
-            interp.run(inputBuffer, outputArray)
+            // SSD outputs
+            // Output locations: [1, 10, 4]
+            val outputLocations = Array(1) { Array(10) { FloatArray(4) } }
+            // Output classes: [1, 10]
+            val outputClasses = Array(1) { FloatArray(10) }
+            // Output scores: [1, 10]
+            val outputScores = Array(1) { FloatArray(10) }
+            // Output num detections: [1]
+            val numDetections = FloatArray(1)
 
-            // Find highest confidence class
-            var maxVal = -1
-            val outputVal = outputArray[0]
-            var maxIndex = -1
-            for (i in outputVal.indices) {
-                val value = outputVal[i].toInt() and 0xFF
-                if (value > maxVal) {
-                    maxVal = value
-                    maxIndex = i
+            val outputs = HashMap<Int, Any>()
+            outputs[0] = outputLocations
+            outputs[1] = outputClasses
+            outputs[2] = outputScores
+            outputs[3] = numDetections
+
+            interp.runForMultipleInputsOutputs(arrayOf(inputBuffer), outputs)
+
+            val count = numDetections[0].toInt().coerceAtMost(10)
+            val result = mutableListOf<DetectedObject>()
+            for (i in 0 until count) {
+                val score = outputScores[0][i]
+                if (score >= 0.35f) {
+                    // SSD COCO classes are 0-indexed in output but map to 1-indexed in labels file (since index 0 is '???')
+                    val classIndex = outputClasses[0][i].toInt() + 1
+                    if (classIndex in labels.indices) {
+                        val label = labels[classIndex]
+                        val loc = outputLocations[0][i] // [ymin, xmin, ymax, xmax]
+                        // RectF bounding box format: [left, top, right, bottom]
+                        val box = android.graphics.RectF(loc[1], loc[0], loc[3], loc[2])
+                        result.add(DetectedObject(label, score, box))
+                    }
                 }
             }
-
-            if (maxIndex in labels.indices) {
-                val label = labels[maxIndex]
-                val confidence = maxVal / 255.0f
-                if (confidence >= 0.35f) {
-                    return Pair(label, confidence)
-                }
-            }
+            return result
         } catch (e: Exception) {
             e.printStackTrace()
         }
-        return null
+        return emptyList()
     }
 
     fun close() {
@@ -101,10 +119,10 @@ class TFLiteObjectDetector(private val context: Context) {
         val wMinus1 = (w - 1).toFloat()
         val hMinus1 = (h - 1).toFloat()
         
-        for (outY in 0 until 224) {
-            val v = outY.toFloat() / 223f
-            for (outX in 0 until 224) {
-                val u = outX.toFloat() / 223f
+        for (outY in 0 until 300) {
+            val v = outY.toFloat() / 299f
+            for (outX in 0 until 300) {
+                val u = outX.toFloat() / 299f
                 
                 // Map output (u, v) coordinates back to source (srcX, srcY) depending on rotation degrees
                 val srcX: Int

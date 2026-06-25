@@ -30,6 +30,11 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.Headphones
+import androidx.compose.material.icons.filled.Smartphone
+import androidx.compose.material.icons.filled.Laptop
+import androidx.compose.material.icons.filled.Watch
+import androidx.compose.material.icons.filled.Devices
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -64,15 +69,20 @@ fun BluetoothTrackerTab(viewModel: BluetoothTrackerViewModel) {
     var activeViewTab by rememberSaveable { mutableStateOf(0) } // 0 = List View, 1 = Map View
     var selectedCategory by rememberSaveable { mutableStateOf(0) } // 0 = All, 1 = Suspicious, 2 = Trusted
 
-    // Request permissions launcher (Bluetooth + Location)
-    val permissionsToRequest = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-        arrayOf(
-            Manifest.permission.BLUETOOTH_SCAN,
-            Manifest.permission.BLUETOOTH_CONNECT,
-            Manifest.permission.ACCESS_FINE_LOCATION
-        )
-    } else {
-        arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+    // Request permissions launcher (Bluetooth + Location + Notifications)
+    val permissionsToRequest = remember {
+        val list = mutableListOf<String>()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            list.add(Manifest.permission.BLUETOOTH_SCAN)
+            list.add(Manifest.permission.BLUETOOTH_CONNECT)
+            list.add(Manifest.permission.ACCESS_FINE_LOCATION)
+        } else {
+            list.add(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            list.add(Manifest.permission.POST_NOTIFICATIONS)
+        }
+        list.toTypedArray()
     }
 
     val launcher = rememberLauncherForActivityResult(
@@ -509,12 +519,31 @@ fun DeviceCard(device: BluetoothTrackerDevice, onToggleSafe: () -> Unit) {
                     ),
                 contentAlignment = Alignment.Center
             ) {
+                val categoryIcon = when {
+                    device.isSafe -> Icons.Default.CheckCircle
+                    device.isSuspicious -> Icons.Default.Warning
+                    else -> {
+                        val cat = device.deviceCategory.lowercase()
+                        when {
+                            cat.contains("audio") || cat.contains("headphone") || cat.contains("speaker") || cat.contains("buds") || cat.contains("pod") -> 
+                                Icons.Default.Headphones
+                            cat.contains("phone") || cat.contains("mobile") -> 
+                                Icons.Default.Smartphone
+                            cat.contains("computer") || cat.contains("pc") || cat.contains("laptop") -> 
+                                Icons.Default.Laptop
+                            cat.contains("wearable") || cat.contains("watch") || cat.contains("band") || cat.contains("fitbit") -> 
+                                Icons.Default.Watch
+                            cat.contains("tracker") || cat.contains("beacon") || cat.contains("tag") -> 
+                                Icons.Default.LocationOn
+                            cat.contains("network") || cat.contains("peripheral") -> 
+                                Icons.Default.Devices
+                            else -> 
+                                Icons.Default.Bluetooth
+                        }
+                    }
+                }
                 Icon(
-                    imageVector = when {
-                        device.isSafe -> Icons.Default.CheckCircle
-                        device.isSuspicious -> Icons.Default.Warning
-                        else -> Icons.Default.Bluetooth
-                    },
+                    imageVector = categoryIcon,
                     contentDescription = null,
                     tint = when {
                         device.isSafe -> Emerald500
@@ -537,6 +566,15 @@ fun DeviceCard(device: BluetoothTrackerDevice, onToggleSafe: () -> Unit) {
                         fontWeight = FontWeight.Bold,
                         fontSize = 13.sp
                     )
+                    // Category Badge tag
+                    Box(
+                        modifier = Modifier
+                            .background(Indigo500.copy(alpha = 0.2f), RoundedCornerShape(4.dp))
+                            .border(1.dp, Indigo500.copy(alpha = 0.4f), RoundedCornerShape(4.dp))
+                            .padding(horizontal = 4.dp, vertical = 2.dp)
+                    ) {
+                        Text(device.deviceCategory.uppercase(), color = Indigo500, fontSize = 7.sp, fontWeight = FontWeight.Bold)
+                    }
                     if (device.isCurrentlyActive) {
                         Box(
                             modifier = Modifier
@@ -566,8 +604,11 @@ fun DeviceCard(device: BluetoothTrackerDevice, onToggleSafe: () -> Unit) {
                         }
                     }
                 }
+                val refinedName = remember(device.name, device.manufacturerName, device.deviceCategory, device.address) {
+                    device.name ?: "${device.manufacturerName} ${device.deviceCategory} (${device.address.takeLast(5)})"
+                }
                 Text(
-                    text = device.name ?: device.address,
+                    text = refinedName,
                     color = Slate400,
                     fontSize = 11.sp
                 )

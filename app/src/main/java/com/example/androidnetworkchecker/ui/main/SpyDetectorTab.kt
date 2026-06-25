@@ -551,6 +551,7 @@ fun OpticsCamView(spyState: SpyScannerState, viewModel: SpyScannerViewModel) {
     val detector = remember { TFLiteObjectDetector(context) }
     var aiDetectedObject by remember { mutableStateOf("") }
     var aiConfidence by remember { mutableStateOf(0f) }
+    var detectedObjects by remember { mutableStateOf<List<TFLiteObjectDetector.DetectedObject>>(emptyList()) }
 
     DisposableEffect(Unit) {
         onDispose {
@@ -599,7 +600,7 @@ fun OpticsCamView(spyState: SpyScannerState, viewModel: SpyScannerViewModel) {
 
     // Define reusable Camera Preview Composable Content
     val cameraPreviewContent = @Composable { modifier: Modifier ->
-        Box(modifier = modifier.background(Color.Black)) {
+        BoxWithConstraints(modifier = modifier.background(Color.Black)) {
             CameraPreview3(
                 cameraId = currentCameraId,
                 colorMatrix = currentMatrix,
@@ -610,13 +611,73 @@ fun OpticsCamView(spyState: SpyScannerState, viewModel: SpyScannerViewModel) {
                     viewModel.updateGlintCoordinates(x, y)
                 },
                 detector = detector,
-                onObjectDetected = { label, confidence ->
-                    aiDetectedObject = label
-                    aiConfidence = confidence
+                onObjectsDetected = { objects ->
+                    detectedObjects = objects
+                    val highest = objects.maxByOrNull { it.confidence }
+                    if (highest != null) {
+                        aiDetectedObject = highest.label
+                        aiConfidence = highest.confidence
+                    } else {
+                        aiDetectedObject = ""
+                        aiConfidence = 0f
+                    }
                 },
                 glintThreshold = spyState.glintThreshold,
                 modifier = Modifier.fillMaxSize()
             )
+
+            // Draw bounding boxes on viewfinder in Optics finder!
+            detectedObjects.forEach { obj ->
+                val left = obj.boundingBox.left
+                val top = obj.boundingBox.top
+                val right = obj.boundingBox.right
+                val bottom = obj.boundingBox.bottom
+
+                val boxWidth = maxWidth * (right - left)
+                val boxHeight = maxHeight * (bottom - top)
+                val offsetX = maxWidth * left
+                val offsetY = maxHeight * top
+
+                val lowerLabel = obj.label.lowercase()
+                val isSuspicious = lowerLabel.contains("socket") || 
+                                   lowerLabel.contains("plug") ||
+                                   lowerLabel.contains("clock") ||
+                                   lowerLabel.contains("watch") ||
+                                   lowerLabel.contains("detector") ||
+                                   lowerLabel.contains("alarm") ||
+                                   lowerLabel.contains("pen") ||
+                                   lowerLabel.contains("camera") ||
+                                   lowerLabel.contains("microphone") ||
+                                   lowerLabel.contains("phone") ||
+                                   lowerLabel.contains("television") ||
+                                   lowerLabel.contains("tv") ||
+                                   lowerLabel.contains("remote") ||
+                                   lowerLabel.contains("keyboard") ||
+                                   lowerLabel.contains("laptop")
+
+                val borderColor = if (isSuspicious) Red500 else Teal500
+
+                Box(
+                    modifier = Modifier
+                        .offset(x = offsetX, y = offsetY)
+                        .size(width = boxWidth, height = boxHeight)
+                        .border(2.dp, borderColor, RoundedCornerShape(4.dp))
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .background(borderColor.copy(alpha = 0.8f))
+                            .padding(horizontal = 4.dp, vertical = 2.dp)
+                            .align(Alignment.TopStart)
+                    ) {
+                        Text(
+                            text = "${obj.label.uppercase()} ${(obj.confidence * 100).toInt()}%",
+                            color = Color.White,
+                            fontSize = 8.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
 
             // Switch Camera Button
             IconButton(
@@ -996,7 +1057,7 @@ fun CameraPreview3(
     isRecording: Boolean = false,
     onGlintDetected: (Float, Float) -> Unit,
     detector: TFLiteObjectDetector? = null,
-    onObjectDetected: ((String, Float) -> Unit)? = null,
+    onObjectsDetected: ((List<TFLiteObjectDetector.DetectedObject>) -> Unit)? = null,
     glintThreshold: Float = 180f,
     modifier: Modifier = Modifier
 ) {
@@ -1113,17 +1174,16 @@ fun CameraPreview3(
                                 val image = r.acquireLatestImage() ?: return@setOnImageAvailableListener
                                 try {
                                     val nowTime = System.currentTimeMillis()
-                                    if (detector != null && onObjectDetected != null && nowTime - lastInferenceTime >= 350) {
+                                    if (detector != null && onObjectsDetected != null && nowTime - lastInferenceTime >= 350) {
                                         lastInferenceTime = nowTime
                                         val rotDeg = getRotationDegrees(context, cameraId)
-                                        val result = detector.classifyFrame(image, rotDeg)
-                                        if (result != null) {
-                                            val lowerLabel = result.first.lowercase()
-                                            isAiLensDetected = lowerLabel.contains("lens") || lowerLabel.contains("camera") || lowerLabel.contains("glass") || lowerLabel.contains("optic")
-                                            onObjectDetected(result.first, result.second)
-                                        } else {
-                                            isAiLensDetected = false
-                                            onObjectDetected("", 0f)
+                                        val results = detector.classifyFrame(image, rotDeg)
+                                        isAiLensDetected = results.any { obj ->
+                                            val lowerLabel = obj.label.lowercase()
+                                            lowerLabel.contains("lens") || lowerLabel.contains("camera") || lowerLabel.contains("glass") || lowerLabel.contains("optic")
+                                        }
+                                        mainHandler.post {
+                                            onObjectsDetected(results)
                                         }
                                     }
 
@@ -1576,6 +1636,7 @@ fun AiObjectDetectionView(viewModel: SpyScannerViewModel) {
     val spyState by viewModel.spyState.collectAsState()
     val aiDetectedObject by viewModel.aiDetectedObject.collectAsState()
     val aiConfidence by viewModel.aiConfidence.collectAsState()
+    val aiDetectedObjects by viewModel.aiDetectedObjects.collectAsState()
 
     var hasCameraPermission by rememberSaveable {
         mutableStateOf(
@@ -1632,7 +1693,7 @@ fun AiObjectDetectionView(viewModel: SpyScannerViewModel) {
         )
 
         if (hasCameraPermission) {
-            Box(
+            BoxWithConstraints(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
@@ -1648,11 +1709,64 @@ fun AiObjectDetectionView(viewModel: SpyScannerViewModel) {
                     isRecording = false,
                     onGlintDetected = { _, _ -> },
                     detector = detector,
-                    onObjectDetected = { label, confidence ->
-                        viewModel.updateAiObject(label, confidence)
+                    onObjectsDetected = { objects ->
+                        viewModel.updateAiObjects(objects)
                     },
                     modifier = Modifier.fillMaxSize()
                 )
+
+                // Draw bounding boxes on viewfinder in AI scanner!
+                aiDetectedObjects.forEach { obj ->
+                    val left = obj.boundingBox.left
+                    val top = obj.boundingBox.top
+                    val right = obj.boundingBox.right
+                    val bottom = obj.boundingBox.bottom
+
+                    val boxWidth = maxWidth * (right - left)
+                    val boxHeight = maxHeight * (bottom - top)
+                    val offsetX = maxWidth * left
+                    val offsetY = maxHeight * top
+
+                    val lowerLabel = obj.label.lowercase()
+                    val isSuspicious = lowerLabel.contains("socket") || 
+                                       lowerLabel.contains("plug") ||
+                                       lowerLabel.contains("clock") ||
+                                       lowerLabel.contains("watch") ||
+                                       lowerLabel.contains("detector") ||
+                                       lowerLabel.contains("alarm") ||
+                                       lowerLabel.contains("pen") ||
+                                       lowerLabel.contains("camera") ||
+                                       lowerLabel.contains("microphone") ||
+                                       lowerLabel.contains("phone") ||
+                                       lowerLabel.contains("television") ||
+                                       lowerLabel.contains("tv") ||
+                                       lowerLabel.contains("remote") ||
+                                       lowerLabel.contains("keyboard") ||
+                                       lowerLabel.contains("laptop")
+
+                    val borderColor = if (isSuspicious) Red500 else Teal500
+
+                    Box(
+                        modifier = Modifier
+                            .offset(x = offsetX, y = offsetY)
+                            .size(width = boxWidth, height = boxHeight)
+                            .border(2.dp, borderColor, RoundedCornerShape(4.dp))
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .background(borderColor.copy(alpha = 0.8f))
+                                .padding(horizontal = 4.dp, vertical = 2.dp)
+                                .align(Alignment.TopStart)
+                        ) {
+                            Text(
+                                text = "${obj.label.uppercase()} ${(obj.confidence * 100).toInt()}%",
+                                color = Color.White,
+                                fontSize = 8.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
 
                 // Switch Camera Button
                 IconButton(

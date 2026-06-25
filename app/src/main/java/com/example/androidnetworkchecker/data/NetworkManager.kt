@@ -316,6 +316,69 @@ object NetworkManager {
         }
     }
 
+    private fun queryNetBiosName(ipAddress: String): String? {
+        var socket: java.net.DatagramSocket? = null
+        try {
+            socket = java.net.DatagramSocket()
+            socket.soTimeout = 200 // 200ms timeout
+            
+            // NetBIOS Node Status Request Payload
+            val payload = byteArrayOf(
+                0xA2.toByte(), 0x48.toByte(), // Transaction ID
+                0x00.toByte(), 0x00.toByte(), // Flags (Query, Standard)
+                0x00.toByte(), 0x01.toByte(), // Questions: 1
+                0x00.toByte(), 0x00.toByte(), // Answer RRs: 0
+                0x00.toByte(), 0x00.toByte(), // Authority RRs: 0
+                0x00.toByte(), 0x00.toByte(), // Additional RRs: 0
+                // Name: encoded "*" representation
+                0x20.toByte(),
+                0x43.toByte(), 0x4B.toByte(), 0x41.toByte(), 0x41.toByte(),
+                0x41.toByte(), 0x41.toByte(), 0x41.toByte(), 0x41.toByte(),
+                0x41.toByte(), 0x41.toByte(), 0x41.toByte(), 0x41.toByte(),
+                0x41.toByte(), 0x41.toByte(), 0x41.toByte(), 0x41.toByte(),
+                0x41.toByte(), 0x41.toByte(), 0x41.toByte(), 0x41.toByte(),
+                0x41.toByte(), 0x41.toByte(), 0x41.toByte(), 0x41.toByte(),
+                0x41.toByte(), 0x41.toByte(), 0x41.toByte(), 0x41.toByte(),
+                0x41.toByte(), 0x41.toByte(), 0x41.toByte(), 0x41.toByte(),
+                0x00.toByte(),
+                0x00.toByte(), 0x21.toByte(), // Type: NBSTAT (0x0021)
+                0x00.toByte(), 0x01.toByte()  // Class: IN (0x0001)
+            )
+            
+            val address = java.net.InetAddress.getByName(ipAddress)
+            val packet = java.net.DatagramPacket(payload, payload.size, address, 137)
+            socket.send(packet)
+            
+            val buffer = ByteArray(1024)
+            val receivePacket = java.net.DatagramPacket(buffer, buffer.size)
+            socket.receive(receivePacket)
+            
+            val len = receivePacket.length
+            if (len > 56) {
+                val numNames = buffer[56].toInt() and 0xFF
+                var offset = 57
+                for (i in 0 until numNames) {
+                    if (offset + 18 > len) break
+                    val nameBytes = ByteArray(15)
+                    System.arraycopy(buffer, offset, nameBytes, 0, 15)
+                    val type = buffer[offset + 15].toInt() and 0xFF
+                    val flags = ((buffer[offset + 16].toInt() and 0xFF) shl 8) or (buffer[offset + 17].toInt() and 0xFF)
+                    
+                    val name = String(nameBytes, Charsets.US_ASCII).trim()
+                    if (type == 0x00 && (flags and 0x8000) == 0 && name.isNotEmpty()) {
+                        return name
+                    }
+                    offset += 18
+                }
+            }
+        } catch (e: Exception) {
+            // Ignore
+        } finally {
+            socket?.close()
+        }
+        return null
+    }
+
     suspend fun scanHosts(
         context: Context,
         interfaceName: String,
@@ -367,7 +430,10 @@ object NetworkManager {
 
                         if (active) {
                             val address = InetAddress.getByName(ip)
-                            val hostname = address.canonicalHostName.takeIf { it != ip }
+                            var hostname = address.canonicalHostName.takeIf { it != ip }
+                            if (hostname == null) {
+                                hostname = queryNetBiosName(ip)
+                            }
                             val host = ScannedHost(ip, hostname, true)
                             synchronized(countLock) {
                                 scannedCount++

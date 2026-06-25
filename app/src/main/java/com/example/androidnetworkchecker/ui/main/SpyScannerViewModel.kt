@@ -38,10 +38,23 @@ class SpyScannerViewModel(context: Context) : ViewModel(), SensorEventListener {
     // AI Object Detection State
     val aiDetectedObject = MutableStateFlow("")
     val aiConfidence = MutableStateFlow(0f)
+    val aiDetectedObjects = MutableStateFlow<List<com.example.androidnetworkchecker.data.TFLiteObjectDetector.DetectedObject>>(emptyList())
 
     fun updateAiObject(label: String, confidence: Float) {
         aiDetectedObject.value = label
         aiConfidence.value = confidence
+    }
+
+    fun updateAiObjects(objects: List<com.example.androidnetworkchecker.data.TFLiteObjectDetector.DetectedObject>) {
+        aiDetectedObjects.value = objects
+        val highest = objects.maxByOrNull { it.confidence }
+        if (highest != null) {
+            aiDetectedObject.value = highest.label
+            aiConfidence.value = highest.confidence
+        } else {
+            aiDetectedObject.value = ""
+            aiConfidence.value = 0f
+        }
     }
 
     // --- EMF Magnetometer Section ---
